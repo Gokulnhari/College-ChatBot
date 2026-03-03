@@ -6,3 +6,7 @@ requests
 pandas
 numpy
 streamlit
+pypdf
+openpyxl
+scikit-learn
+python-multipart
