@@ -21,6 +21,12 @@ importlib.reload(prompts)
 
 from config import settings
 from prompts import QUERY_PLANNER_PROMPT, RESPONSE_GENERATOR_PROMPT
+from prompts.templates import (
+    get_classification_prompt,
+    get_query_planner_prompt,
+    get_response_generator_prompt,
+    get_rag_prompt
+)
 
 
 class LLMService:
@@ -33,27 +39,59 @@ class LLMService:
 
     # ── UNCHANGED: classify_question ──────────────────────────────────────────
 
-    async def classify_question(self, question: str, model_name: str = None) -> str:
+    async def classify_question(self, question: str, model_name: str = None, conversation_history: List[Dict] = None) -> str:
         """
         Classify whether question is database-related or general chat.
         Returns: 'database' or 'general'
+
+        Args:
+            question: Current user question
+            model_name: Model to use
+            conversation_history: Previous conversation turns for context
         """
+        # HEURISTIC: Short follow-up questions with conversation history → database
+        # Examples: "full name", "show more", "what about marks", "his class"
+        if conversation_history and len(conversation_history) > 0:
+            question_lower = question.lower().strip()
+            # Check if it's a very short question (likely a follow-up)
+            word_count = len(question_lower.split())
+
+            # Short questions (1-3 words) with history are almost always follow-ups
+            if word_count <= 3:
+                # Check if previous conversation was about database
+                last_user_msg = next((msg for msg in reversed(conversation_history) if msg['role'] == 'user'), None)
+                if last_user_msg:
+                    # If the last question was likely database-related, this is too
+                    domain = settings.get_domain()
+                    entity_mentioned = any(entity in last_user_msg['content'].lower()
+                                         for entity in [domain.entity_name, domain.entity_name_plural])
+                    field_mentioned = any(field.lower() in last_user_msg['content'].lower()
+                                        for field in domain.field_names[:10])
+
+                    if entity_mentioned or field_mentioned:
+                        print(f"[classify] Short follow-up detected: '{question}' → database")
+                        return "database"
+
         model_to_use = model_name if model_name else self.default_model
 
-        prompt = f"""
-        You are a classifier.
+        # Use domain-aware classification prompt
+        domain = settings.get_domain()
+        base_prompt = get_classification_prompt(domain, question)
 
-        If the user question is related to student data, marks, class, section, student name,
-        return ONLY this word:
-        database
+        # Add conversation context if available
+        if conversation_history:
+            context_str = "\n".join([
+                f"{'User' if msg['role'] == 'user' else 'Assistant'}: {msg['content'][:200]}"
+                for msg in conversation_history[-3:]  # Last 3 turns for context
+            ])
+            prompt = f"""Previous conversation:
+{context_str}
 
-        If the question is casual conversation, greeting, or general knowledge,
-        return ONLY this word:
-        general
+{base_prompt}"""
+        else:
+            prompt = base_prompt
 
-        Question: {question}
-        Answer:
-        """
+        print(f"[classify] Classifying: '{question}' (history: {len(conversation_history or [])} turns)")
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -66,7 +104,9 @@ class LLMService:
             data   = response.json()
             result = data.get("response", "").strip().lower()
 
-            return "database" if "database" in result else "general"
+            classification = "database" if "database" in result else "general"
+            print(f"[classify] Result: {classification} (LLM output: '{result[:50]}')")
+            return classification
             
         except httpx.ConnectError:
             # Default to general if Ollama is not available
@@ -78,11 +118,45 @@ class LLMService:
 
     # ── UNCHANGED: get_structured_query ───────────────────────────────────────
 
-    async def get_structured_query(self, question: str, model_name: str = None) -> Dict[str, Any]:
+    async def get_structured_query(self, question: str, model_name: str = None, conversation_history: List[Dict] = None) -> Dict[str, Any]:
+        """
+        Generate structured query from natural language.
+
+        Args:
+            question: Current user question
+            model_name: Model to use
+            conversation_history: Previous conversation for context resolution
+        """
         model_to_use = model_name if model_name else self.default_model
         print("Using Model:", model_to_use)
 
-        prompt = QUERY_PLANNER_PROMPT + "\nUser Question:\n" + question
+        # Use domain-aware query planner prompt
+        domain = settings.get_domain()
+        base_prompt = get_query_planner_prompt(domain)
+
+        # Add conversation context for follow-up questions
+        context_section = ""
+        if conversation_history:
+            recent_history = conversation_history[-4:]  # Last 4 turns
+            context_lines = []
+            for msg in recent_history:
+                role = "User" if msg['role'] == 'user' else "Assistant"
+                context_lines.append(f"{role}: {msg['content'][:200]}")  # Truncate long messages
+
+            context_section = f"""
+# Previous Conversation Context:
+{chr(10).join(context_lines)}
+
+# IMPORTANT: The current question may refer to entities or topics mentioned above.
+# If the question uses pronouns (he, she, they, it) or partial names, resolve them using the context.
+# For example:
+# - "Full name" after asking about "Meera" → asking for Meera's full name
+# - "What about marks?" after discussing a student → asking about that student's marks
+# - "Show me more" → continue previous query
+
+"""
+
+        prompt = base_prompt + context_section + "\n\nUser Question:\n" + question
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -141,10 +215,9 @@ class LLMService:
         else:
             formatted_result = str(result)
 
-        prompt = RESPONSE_GENERATOR_PROMPT.format(
-            question=question,
-            result=formatted_result
-        )
+        # Use domain-aware response generator prompt
+        domain = settings.get_domain()
+        prompt = get_response_generator_prompt(domain, question, formatted_result)
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -253,28 +326,9 @@ class LLMService:
 
         context = "\n\n".join(context_parts)
 
-
-
-        prompt = f"""<|system|>
-You are a strict document reader. You must answer using ONLY the text provided in the CONTEXT section.
-You are FORBIDDEN from using any outside knowledge.
-If the answer exists in the context, extract it word-for-word or paraphrase it closely.
-If the answer does not exist in the context, respond only with: "This information is not found in the uploaded document."
-Never mention GPT, OpenAI, Microsoft, or any information not present in the context.
-<|end|>
-<|user|>
-CONTEXT:
-{context}
-
-QUESTION: {question}
-
-Rules:
-- Use ONLY the context above.
-- Do NOT add your own knowledge.
-- Do NOT make assumptions.
-- Answer directly without preamble.
-<|end|>
-<|assistant|>"""
+        # Use domain-aware RAG prompt
+        domain = settings.get_domain()
+        prompt = get_rag_prompt(domain, context, question)
 
 
 

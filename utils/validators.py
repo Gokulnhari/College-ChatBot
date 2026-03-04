@@ -7,7 +7,7 @@ class SecurityValidator:
     """Security validation for queries"""
     
     # Allowed comparison operators
-    ALLOWED_OPERATORS = {"==", "!=", ">", "<", ">=", "<="}
+    ALLOWED_OPERATORS = {"==", "!=", ">", "<", ">=", "<=", "contains"}
     
     # Allowed aggregation functions
     ALLOWED_AGGREGATIONS = {"max", "min", "mean", "sum", "count", "median", "std", "var"}

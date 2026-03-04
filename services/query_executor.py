@@ -82,9 +82,19 @@ class QueryExecutor:
 
             # Apply filter (safe - no eval/exec)
             if op == "==":
-                df = df[df[col] == val]
+                # For string columns, make case-insensitive
+                if df[col].dtype == 'object':
+                    df = df[df[col].str.lower() == str(val).lower()]
+                else:
+                    df = df[df[col] == val]
             elif op == "!=":
-                df = df[df[col] != val]
+                if df[col].dtype == 'object':
+                    df = df[df[col].str.lower() != str(val).lower()]
+                else:
+                    df = df[df[col] != val]
+            elif op == "contains":
+                # Case-insensitive partial matching for strings
+                df = df[df[col].str.contains(str(val), case=False, na=False)]
             elif op == ">":
                 df = df[df[col] > val]
             elif op == "<":

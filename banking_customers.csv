@@ -1,0 +1,11 @@
+Customer_ID,Full_Name,Account_Type,Account_Number,Balance,Credit_Score,Branch,Account_Status,Monthly_Transactions,Last_Transaction_Date,Loan_Amount,KYC_Status
+CUST001,John Smith,Savings,ACC10001,125000.50,750,Downtown,Active,45,2026-03-01,0,Verified
+CUST002,Sarah Johnson,Current,ACC10002,87500.25,680,Uptown,Active,32,2026-03-03,50000,Verified
+CUST003,Michael Brown,Fixed,ACC10003,250000.00,820,Midtown,Active,12,2026-02-28,0,Verified
+CUST004,Emily Davis,Savings,ACC10004,45000.75,590,Downtown,Active,28,2026-03-02,15000,Pending
+CUST005,David Wilson,Current,ACC10005,310000.00,780,Uptown,Active,67,2026-03-04,120000,Verified
+CUST006,Jessica Martinez,Savings,ACC10006,62000.00,710,Midtown,Inactive,8,2026-01-15,0,Verified
+CUST007,James Anderson,Current,ACC10007,95000.50,640,Downtown,Active,41,2026-03-01,35000,Verified
+CUST008,Linda Taylor,Fixed,ACC10008,180000.00,760,Uptown,Active,5,2026-02-20,0,Verified
+CUST009,Robert Thomas,Savings,ACC10009,28000.00,550,Midtown,Frozen,15,2025-12-10,8000,Pending
+CUST010,Mary Jackson,Current,ACC10010,420000.75,850,Downtown,Active,89,2026-03-03,250000,Verified

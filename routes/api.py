@@ -212,8 +212,20 @@ async def ask_question(request: QuestionRequest):
     #   → Entire original pipeline runs UNCHANGED
     # ─────────────────────────────────────────────────
     """
-    print(f"Question: {request.question}")
-    print(f"Selected Model: {request.model}")
+    print(f"\n{'='*70}")
+    print(f"[ASK] Question: {request.question}")
+    print(f"[ASK] Model: {request.model}")
+
+    # Extract conversation history
+    conversation_history = request.conversation_history or []
+    print(f"[ASK] Conversation history: {len(conversation_history)} turns")
+
+    # Debug: Show last message from history
+    if conversation_history:
+        last_msg = conversation_history[-1]
+        print(f"[ASK] Last message: [{last_msg['role']}] {last_msg['content'][:100]}...")
+    else:
+        print(f"[ASK] No conversation history")
 
     # ── RAG ADDITION: mode detection ──────────────────────────────────────────
     override = request.mode_override
@@ -253,12 +265,13 @@ async def ask_question(request: QuestionRequest):
         )
     # ── END RAG ADDITION ──────────────────────────────────────────────────────
 
-    # ── ORIGINAL CSV PIPELINE (100% unchanged below this line) ────────────────
+    # ── ORIGINAL CSV PIPELINE (with conversation context support) ────────────
 
     # Step 0: Classify question
     question_type = await llm_service.classify_question(
         request.question,
-        model_name=request.model
+        model_name=request.model,
+        conversation_history=conversation_history  # Pass context
     )
     print("Question Type:", question_type)
 
@@ -305,9 +318,11 @@ async def ask_question(request: QuestionRequest):
                 mode="csv",
             )
 
-    # Step 1: Get structured query from LLM
+    # Step 1: Get structured query from LLM (with conversation context)
     structured_query = await llm_service.get_structured_query(
-        request.question, model_name=request.model
+        request.question,
+        model_name=request.model,
+        conversation_history=conversation_history  # Pass context for follow-up resolution
     )
     print(f"Structured Query: {json.dumps(structured_query, indent=2)}")
 
@@ -323,10 +338,20 @@ async def ask_question(request: QuestionRequest):
     if structured_query.get("query_type") == "clarification":
         clarification_question = structured_query.get("question", "Please clarify your request.")
         options = structured_query.get("options", [])
-        options_str = "\n".join([
-            f"- {', '.join([f'{k}: {v}' for k, v in option.items()])}"
-            for option in options
-        ])
+
+        # Handle both dict and string options
+        options_list = []
+        for option in options:
+            if isinstance(option, dict):
+                # Dict format: {"name": "John", "class": "10", ...}
+                option_str = ', '.join([f'{k}: {v}' for k, v in option.items()])
+                options_list.append(f"- {option_str}")
+            else:
+                # String format: just display as-is
+                options_list.append(f"- {option}")
+
+        options_str = "\n".join(options_list) if options_list else "No options available"
+
         return QuestionResponse(
             response=f"{clarification_question}\n\nOptions:\n{options_str}",
             structured_query=structured_query,
@@ -375,3 +400,70 @@ async def active_csv_status():
             "columns": len(df.columns)
         }
     return {"uploaded": False}
+
+
+# ── DOMAIN MANAGEMENT ENDPOINTS ───────────────────────────────────────────────
+
+@router.get("/domain-info")
+async def get_domain_info():
+    """Get information about current and available domains"""
+    from config.domains import list_domains
+
+    domain = settings.get_domain()
+    return {
+        "current_domain": settings.ACTIVE_DOMAIN,
+        "available_domains": list_domains(),
+        "entity_name": domain.entity_name,
+        "entity_plural": domain.entity_name_plural,
+        "description": domain.description,
+        "csv_file": domain.csv_file_path,
+        "field_count": len(domain.fields),
+        "fields": domain.field_names,
+    }
+
+
+@router.post("/set-domain")
+async def set_domain(request: dict):
+    """
+    Switch to a different domain.
+
+    Request body: {"domain_name": "banking"}
+    """
+    domain_name = request.get("domain_name")
+
+    if not domain_name:
+        raise HTTPException(status_code=400, detail="domain_name is required")
+
+    try:
+        from config.domains import list_domains
+
+        if domain_name not in list_domains():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid domain. Available: {', '.join(list_domains())}"
+            )
+
+        # Switch domain
+        settings.set_domain(domain_name)
+
+        # Clear query executor's DataFrame cache
+        query_executor.df = None
+
+        domain = settings.get_domain()
+        return {
+            "domain": domain_name,
+            "entity_plural": domain.entity_name_plural,
+            "csv_file": domain.csv_file_path,
+            "fields": domain.field_names,
+            "status": "switched"
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"CSV file not found for domain '{domain_name}': {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error switching domain: {str(e)}")

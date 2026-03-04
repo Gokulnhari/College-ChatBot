@@ -22,10 +22,17 @@ class QuestionRequest(BaseModel):
     question: str
     model: str
     mode_override: Optional[str] = "Auto-detect"
+    conversation_history: Optional[List[Dict[str, str]]] = None  # [{"role": "user/assistant", "content": "..."}]
 
     class Config:
         json_schema_extra = {
-            "example": {"question": "How many students are in class 10?"}
+            "example": {
+                "question": "How many students are in class 10?",
+                "conversation_history": [
+                    {"role": "user", "content": "Who is Meera?"},
+                    {"role": "assistant", "content": "There are multiple students named Meera..."}
+                ]
+            }
         }
 
 

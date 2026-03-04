@@ -47,6 +47,49 @@ if "messages" not in st.session_state:
 
 # ── RAG ADDITION: sidebar ─────────────────────────────────────────────────────
 with st.sidebar:
+    # DOMAIN SELECTOR
+    st.header("🎯 Domain Selection")
+    try:
+        domain_resp = requests.get(f"{API_BASE}/domain-info", timeout=3)
+        if domain_resp.ok:
+            domain_info = domain_resp.json()
+            current_domain = domain_info.get("current_domain", "education")
+            available_domains = domain_info.get("available_domains", ["education"])
+            entity_plural = domain_info.get("entity_plural", "records")
+
+            # Domain selector
+            selected_domain = st.selectbox(
+                "Active Domain:",
+                available_domains,
+                index=available_domains.index(current_domain) if current_domain in available_domains else 0,
+                help="Switch between different industries/use-cases"
+            )
+
+            # If domain changed, switch it
+            if selected_domain != current_domain:
+                try:
+                    switch_resp = requests.post(
+                        f"{API_BASE}/set-domain",
+                        json={"domain_name": selected_domain},
+                        timeout=5
+                    )
+                    if switch_resp.ok:
+                        st.success(f"Switched to {selected_domain}")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed to switch domain: {switch_resp.text}")
+                except Exception as e:
+                    st.error(f"Error switching domain: {e}")
+
+            # Show current domain info
+            st.caption(f"📊 Working with {entity_plural}")
+        else:
+            st.caption("Domain info unavailable")
+    except Exception:
+        pass
+
+    st.divider()
+
     st.header("📁 Document Index")
 
     # Fetch current status
@@ -195,7 +238,8 @@ for message in st.session_state.messages:
 # UNCHANGED: model selector
 model_option = st.selectbox(
     "Select Model",
-    ["qwen2.5:1.5b", "deepseek-r1:1.5b", "phi3:3.8b-mini-4k-instruct-q4_0"],
+    # ["qwen2.5:1.5b", "deepseek-r1:1.5b", "phi3:3.8b-mini-4k-instruct-q4_0"],
+    ["qwen2.5:7b", "phi3:14b", "qwen3.5:35b", "mistral:7b", "llama3.1:8b"],
     index=0,
 )
 
@@ -208,9 +252,20 @@ if prompt := st.chat_input("Ask about your documents or the school dataset…"):
     with st.chat_message("assistant"):
         with st.spinner(f"Thinking with {model_option}…"):
             try:
+                # Build conversation history (exclude current question)
+                conversation_history = [
+                    {"role": msg["role"], "content": msg["content"]}
+                    for msg in st.session_state.messages[:-1]  # Exclude the just-added user message
+                ]
+
                 response = requests.post(
                     ASK_URL,
-                    json={"question": prompt, "model": model_option, "mode_override": st.session_state.get("manual_mode", "Auto-detect")},
+                    json={
+                        "question": prompt,
+                        "model": model_option,
+                        "mode_override": st.session_state.get("manual_mode", "Auto-detect"),
+                        "conversation_history": conversation_history  # Send context
+                    },
                     timeout=10000,
                 )
 
