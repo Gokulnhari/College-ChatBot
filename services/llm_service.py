@@ -55,16 +55,26 @@ class LLMService:
         Answer:
         """
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.url,
-                json={"model": model_to_use, "prompt": prompt, "stream": False}
-            )
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    self.url,
+                    json={"model": model_to_use, "prompt": prompt, "stream": False}
+                )
+                response.raise_for_status()
 
-        data   = response.json()
-        result = data.get("response", "").strip().lower()
+            data   = response.json()
+            result = data.get("response", "").strip().lower()
 
-        return "database" if "database" in result else "general"
+            return "database" if "database" in result else "general"
+            
+        except httpx.ConnectError:
+            # Default to general if Ollama is not available
+            print("Warning: Cannot connect to Ollama service. Defaulting to general classification.")
+            return "general"
+        except Exception as e:
+            print(f"Error in question classification: {e}")
+            return "general"
 
     # ── UNCHANGED: get_structured_query ───────────────────────────────────────
 
@@ -74,34 +84,43 @@ class LLMService:
 
         prompt = QUERY_PLANNER_PROMPT + "\nUser Question:\n" + question
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.url,
-                json={
-                    "model":  model_to_use,
-                    "prompt": prompt,
-                    "stream": False,
-                    "format": "json"
-                },
-            )
-
-        data = response.json()
-
-        if "response" not in data:
-            raise Exception("Invalid Ollama response: " + str(data))
-
-        raw_output = data["response"].strip()
-
-        if not raw_output:
-            raise Exception("Model returned empty response")
-
         try:
-            return json.loads(raw_output)
-        except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", raw_output, re.DOTALL)
-            if match:
-                return json.loads(match.group())
-            raise Exception("No valid JSON found in model output:\n" + raw_output)
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    self.url,
+                    json={
+                        "model":  model_to_use,
+                        "prompt": prompt,
+                        "stream": False,
+                        "format": "json"
+                    },
+                )
+                response.raise_for_status()
+
+            data = response.json()
+
+            if "response" not in data:
+                return {"error": "Invalid LLM response", "query_type": "error"}
+
+            raw_output = data["response"].strip()
+
+            if not raw_output:
+                return {"error": "Empty response from LLM", "query_type": "error"}
+
+            try:
+                return json.loads(raw_output)
+            except json.JSONDecodeError:
+                match = re.search(r"\{.*\}", raw_output, re.DOTALL)
+                if match:
+                    return json.loads(match.group())
+                return {"error": "Invalid JSON in LLM response", "query_type": "error"}
+                
+        except httpx.ConnectError:
+            print("Error: Cannot connect to Ollama service.")
+            return {"error": "LLM service unavailable. Please make sure Ollama is running.", "query_type": "error"}
+        except Exception as e:
+            print(f"Error generating structured query: {e}")
+            return {"error": str(e), "query_type": "error"}
 
     # ── UNCHANGED: generate_natural_response ──────────────────────────────────
 
@@ -127,47 +146,65 @@ class LLMService:
             result=formatted_result
         )
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.url,
-                json={"model": model_to_use, "prompt": prompt, "stream": False},
-            )
-        data = response.json()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    self.url,
+                    json={"model": model_to_use, "prompt": prompt, "stream": False},
+                )
+                response.raise_for_status()
+                
+            data = response.json()
 
-        if "response" not in data:
-            return f"The result is: {result}"
+            if "response" not in data:
+                return f"The result is: {result}"
 
-        response_text = data["response"].strip()
+            response_text = data["response"].strip()
 
-        prefixes_to_remove = [
-            "Response:", "Here's a response:", "Here's a friendly response:",
-            "The user asked", "It looks like",
-        ]
-        for prefix in prefixes_to_remove:
-            if response_text.startswith(prefix):
-                response_text = response_text[len(prefix):].strip()
+            prefixes_to_remove = [
+                "Response:", "Here's a response:", "Here's a friendly response:",
+                "The user asked", "It looks like",
+            ]
+            for prefix in prefixes_to_remove:
+                if response_text.startswith(prefix):
+                    response_text = response_text[len(prefix):].strip()
 
-        if response_text.startswith('"') and response_text.endswith('"'):
-            response_text = response_text[1:-1]
+            if response_text.startswith('"') and response_text.endswith('"'):
+                response_text = response_text[1:-1]
 
-        return response_text
+            return response_text
+            
+        except httpx.ConnectError:
+            return "Sorry, the AI service is temporarily unavailable. Please make sure Ollama is running on your system."
+        except Exception as e:
+            print(f"Error generating natural response: {e}")
+            return "I encountered an error while processing your request."
 
     # ── UNCHANGED: generate_chat_response ─────────────────────────────────────
 
     async def generate_chat_response(self, question: str, model_name: str = None) -> str:
         """Handle general chat questions (non-database related)."""
         model_to_use = model_name if model_name else self.default_model
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.url,
-                json={"model": model_to_use, "prompt": question, "stream": False},
-            )
-        data = response.json()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    self.url,
+                    json={"model": model_to_use, "prompt": question, "stream": False},
+                )
+                response.raise_for_status()
+                
+            data = response.json()
 
-        if "response" not in data:
-            return "Sorry, I couldn't process that."
+            if "response" not in data:
+                return "Hello! I'm here to help you."
 
-        return data["response"].strip()
+            return data["response"].strip()
+            
+        except httpx.ConnectError:
+            return "Hello! I'm here to help, but the AI service is currently unavailable. Please make sure Ollama is running."
+        except Exception as e:
+            print(f"Error generating chat response: {e}")
+            return "Hello! I'm experiencing some technical difficulties right now."
 
     # ── RAG ADDITION: rag_answer ───────────────────────────────────────────────
 
@@ -241,17 +278,25 @@ Rules:
 
 
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.url,
-                json={"model": model_to_use, "prompt": prompt, "stream": False},
-            )
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    self.url,
+                    json={"model": model_to_use, "prompt": prompt, "stream": False},
+                )
+                response.raise_for_status()
 
-        data = response.json()
-        if "response" not in data:
-            return "Sorry, I couldn't generate a response from the documents."
+            data = response.json()
+            if "response" not in data:
+                return "Sorry, I couldn't generate a response from the documents."
 
-        answer = data["response"].strip()
+            answer = data["response"].strip()
+            
+        except httpx.ConnectError:
+            return "Sorry, the AI service is temporarily unavailable. Please make sure Ollama is running on your system to get responses from uploaded documents."
+        except Exception as e:
+            print(f"Error generating RAG response: {e}")
+            return "I encountered an error while processing your document-based question."
 
         # Strip common preamble the model might add
         for prefix in ["ANSWER:", "Answer:", "Response:"]:

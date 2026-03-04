@@ -17,6 +17,7 @@ Defines all HTTP endpoints.
 from fastapi import APIRouter, UploadFile, File, HTTPException
 import json
 import re
+import httpx
 
 from models import (
     QuestionRequest,
@@ -126,6 +127,55 @@ async def get_status():
     stats = vector_store.status()
     mode  = settings.get_mode()
     return VectorStoreStatus(**stats, mode=mode)
+
+
+@router.get("/health") 
+async def health_check():
+    """Comprehensive health check for the application and its dependencies"""
+    health_data = {
+        "status": "healthy",
+        "issues": []
+    }
+    
+    # Test Ollama connection
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+            response = await client.get(settings.OLLAMA_URL.replace("/api/generate", "/api/tags"))
+            response.raise_for_status()
+            models = response.json().get("models", [])
+            available_models = [model["name"] for model in models] if models else []
+            health_data["ollama"] = {
+                "status": "healthy",
+                "url": settings.OLLAMA_URL,
+                "available_models": available_models
+            }
+    except Exception as e:
+        health_data["status"] = "degraded"
+        health_data["issues"].append("Ollama service is not available")
+        health_data["ollama"] = {
+            "status": f"unhealthy: {str(e)}",
+            "url": settings.OLLAMA_URL,
+            "available_models": []
+        }
+    
+    # Check vector store
+    try:
+        vector_store_status = vector_store.get_status()
+        health_data["vector_store"] = vector_store_status
+    except Exception as e:
+        health_data["issues"].append(f"Vector store error: {str(e)}")
+        health_data["vector_store"] = {"status": "error"}
+    
+    # Check CSV data
+    try:
+        df = settings.get_dataframe()
+        csv_status = f"loaded ({len(df)} rows)" if df is not None else "not loaded"
+        health_data["csv_data"] = {"status": csv_status}
+    except Exception as e:
+        health_data["issues"].append(f"CSV data error: {str(e)}")
+        health_data["csv_data"] = {"status": "error"}
+    
+    return health_data
 
 
 # ── RAG ADDITION: /remove-file endpoint ───────────────────────────────────────
@@ -260,6 +310,15 @@ async def ask_question(request: QuestionRequest):
         request.question, model_name=request.model
     )
     print(f"Structured Query: {json.dumps(structured_query, indent=2)}")
+
+    # Check if LLM service returned an error
+    if structured_query.get("query_type") == "error":
+        return QuestionResponse(
+            response=structured_query.get("error", "Sorry, I encountered an error processing your question."),
+            structured_query=None,
+            raw_result=None,
+            mode="csv",
+        )
 
     if structured_query.get("query_type") == "clarification":
         clarification_question = structured_query.get("question", "Please clarify your request.")
