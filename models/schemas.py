@@ -21,6 +21,7 @@ class QuestionRequest(BaseModel):
     """Request model for asking questions"""
     question: str
     model: str
+    mode_override: Optional[str] = "Auto-detect"
 
     class Config:
         json_schema_extra = {

@@ -41,10 +41,23 @@ class Settings:
     ]
 
     _df = None
+    _uploaded_df = None  # ADDITION: temporary uploaded CSV DataFrame
+
+    @classmethod
+    def set_uploaded_dataframe(cls, df) -> None:
+        """ADDITION: Set temporary uploaded CSV (session only)"""
+        cls._uploaded_df = df
+
+    @classmethod
+    def clear_uploaded_dataframe(cls) -> None:
+        """ADDITION: Revert to original CSV"""
+        cls._uploaded_df = None
 
     @classmethod
     def get_dataframe(cls) -> pd.DataFrame:
-        """Get the cached DataFrame (loads once)"""
+        """MODIFIED: Returns uploaded CSV if present, else original"""
+        if cls._uploaded_df is not None:
+            return cls._uploaded_df
         if cls._df is None:
             cls._df = pd.read_csv(cls.CSV_FILE_PATH)
         return cls._df

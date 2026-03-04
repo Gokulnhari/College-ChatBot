@@ -30,6 +30,8 @@ from config import settings
 
 # RAG ADDITION: import new modules
 from vector_store import vector_store
+import pandas as pd  # ADDITION
+import io            # ADDITION
 
 router = APIRouter()
 
@@ -82,6 +84,24 @@ async def upload_file(file: UploadFile = File(...)):
 
     file_bytes = await file.read()
 
+        # ADDITION: CSV files load into pandas, not RAG
+    if ext == ".csv":
+        try:
+            df = pd.read_csv(io.BytesIO(file_bytes))
+            settings.set_uploaded_dataframe(df)
+            # Update query_executor to use new DataFrame
+            query_executor.df = df
+            return UploadResponse(
+                filename=filename,
+                source_type="csv",
+                chunks_added=len(df),
+                total_chunks=len(df),
+                warning=f"CSV loaded into pandas with {len(df)} rows and columns: {', '.join(df.columns.tolist())}"
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"CSV load error: {str(e)}")
+    # ADDITION END
+
     try:
         result = vector_store.add_file(filename, file_bytes)
     except ValueError as e:
@@ -90,6 +110,8 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Indexing error: {str(e)}")
 
     return UploadResponse(**result)
+
+    
 
 
 # ── RAG ADDITION: /status endpoint ────────────────────────────────────────────
@@ -110,10 +132,14 @@ async def get_status():
 
 @router.post("/remove-file")
 async def remove_file(request: RemoveFileRequest):
-    """
-    # RAG ADDITION
-    Remove all chunks for a specific file and rebuild the index.
-    """
+    if request.filename.endswith(".csv"):
+        # Clear pandas uploaded DataFrame
+        settings.clear_uploaded_dataframe()
+        query_executor.df = settings.get_dataframe()
+        # Also remove from RAG in case it was indexed in a previous session
+        vector_store.remove_file(request.filename)
+        return {"filename": request.filename, "removed": 1,
+                "message": "Uploaded CSV cleared. Reverted to original database."}
     result = vector_store.remove_file(request.filename)
     return result
 
@@ -140,7 +166,13 @@ async def ask_question(request: QuestionRequest):
     print(f"Selected Model: {request.model}")
 
     # ── RAG ADDITION: mode detection ──────────────────────────────────────────
-    mode = settings.get_mode()
+    override = request.mode_override
+    if override == "CSV only (student database)":
+        mode = "csv"
+    elif override == "RAG only (uploaded documents)":
+        mode = "rag"
+    else:
+        mode = settings.get_mode()
     print(f"[routes] Mode: {mode}")
 
     if mode == "rag":
@@ -269,3 +301,18 @@ async def ask_question(request: QuestionRequest):
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy"}
+
+# ADDITION: active CSV status endpoint
+@router.get("/active-csv")
+async def active_csv_status():
+    """Returns info about the currently active CSV"""
+    from config import settings as s
+    if s._uploaded_df is not None:
+        df = s._uploaded_df
+        return {
+            "uploaded": True,
+            "filename": "uploaded_file.csv",
+            "rows": len(df),
+            "columns": len(df.columns)
+        }
+    return {"uploaded": False}

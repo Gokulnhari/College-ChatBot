@@ -70,6 +70,30 @@ with st.sidebar:
 
     st.caption(f"{total_chunks} chunks indexed across {len(indexed_files)} file(s)")
 
+    # ADDITION: show active CSV notice
+    try:
+        active_resp = requests.get(f"{API_BASE}/active-csv", timeout=3)
+        if active_resp.ok:
+            active = active_resp.json()
+            if active.get("uploaded"):
+                st.info(f"📊 Active CSV: `{active['filename']}`\n\n"
+                        f"{active['rows']} rows | {active['columns']} columns\n\n"
+                        f"Remove it to revert to original database.")
+    except Exception:
+        pass
+    # ADDITION END
+
+    # Upload widget
+    # Query Mode Selector
+    st.subheader("⚙️ Query Mode")
+    manual_mode = st.radio(
+        "Select mode:",
+        ["Auto-detect", "CSV only (student database)", "RAG only (uploaded documents)"],
+        index=0
+    )
+    st.session_state["manual_mode"] = manual_mode
+    st.divider()
+
     # Upload widget
     st.subheader("Upload a file")
     uploaded = st.file_uploader(
@@ -186,7 +210,7 @@ if prompt := st.chat_input("Ask about your documents or the school dataset…"):
             try:
                 response = requests.post(
                     ASK_URL,
-                    json={"question": prompt, "model": model_option},
+                    json={"question": prompt, "model": model_option, "mode_override": st.session_state.get("manual_mode", "Auto-detect")},
                     timeout=10000,
                 )
 
