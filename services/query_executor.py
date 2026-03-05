@@ -155,7 +155,6 @@ class QueryExecutor:
 
         print(f"  List query result DF head:\n{result_df.head()}")
         return result_df.to_dict(orient='records')
-
     def _execute_aggregate_query(
         self,
         df: pd.DataFrame,
@@ -163,15 +162,33 @@ class QueryExecutor:
     ) -> Any:
         """Execute an aggregate query (returns statistics)"""
 
-        # FIX: normalize "operation" → "function" (some models use wrong key)
-        aggregations = query.get("aggregations", [])
+        # -------------------------------------------------
+        # Normalize aggregation format
+        # -------------------------------------------------
+
+        aggregations = query.get("aggregations")
+
+        if not aggregations:
+            single_agg = query.get("aggregation")
+            if isinstance(single_agg, dict):
+                aggregations = [single_agg]
+            else:
+                aggregations = []
+
+        if isinstance(aggregations, dict):
+            aggregations = [aggregations]
+
         for agg in aggregations:
-            if "operation" in agg and "function" not in agg:
-                agg["function"] = agg.pop("operation")
+            if isinstance(agg, dict):
+                if "operation" in agg and "function" not in agg:
+                    agg["function"] = agg.pop("operation")
+
+        # -------------------------------------------------
+        # Grouping
+        # -------------------------------------------------
 
         group_by_cols = query.get("group_by")
 
-        # Group if needed
         if group_by_cols:
             print(f"  Grouping by: {group_by_cols}")
             for col in group_by_cols:
@@ -181,7 +198,10 @@ class QueryExecutor:
         else:
             grouped = None
 
+        # -------------------------------------------------
         # Apply aggregations
+        # -------------------------------------------------
+
         if not aggregations:
             raise ValueError("No aggregations specified for aggregate query")
 
@@ -191,34 +211,49 @@ class QueryExecutor:
             func = agg_spec["function"]
             col = agg_spec["column"]
             alias = agg_spec.get("alias", f"{func}_{col}")
+
             print(f"  Applying aggregation: {func} on {col} as {alias}")
 
-            # Security: Validate
             if not validator.validate_aggregation(func):
                 raise ValueError(f"Invalid aggregation: {func}")
             if not validator.validate_column(col, self.df.columns.tolist()):
                 raise ValueError(f"Invalid column: {col}")
 
-            # Execute aggregation
-            results[alias] = self._apply_aggregation(grouped or df, col, func, grouped is not None)
+            results[alias] = self._apply_aggregation(
+                grouped if grouped else df,
+                col,
+                func,
+                grouped is not None
+            )
 
-        # Combine results
+        # -------------------------------------------------
+        # Build result DataFrame
+        # -------------------------------------------------
+
         if grouped:
             result_df = pd.DataFrame(results).reset_index()
         else:
             result_df = pd.DataFrame([results])
 
+        # -------------------------------------------------
         # Sort
+        # -------------------------------------------------
+
         result_df = self._apply_sort(result_df, query.get("sort_by"))
 
+        # -------------------------------------------------
         # Limit
+        # -------------------------------------------------
+
         limit = query.get("limit")
         if limit:
             print(f"  Applying limit: {limit}")
             result_df = result_df.head(limit)
 
         print(f"  Aggregate query result DF:\n{result_df}")
+
         return self._format_result(result_df)
+
 
     def _apply_aggregation(
         self,
