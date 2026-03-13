@@ -22,18 +22,15 @@ class Settings:
     """Application settings"""
 
     # ── existing settings (UNCHANGED) ──────────────────────────────────────────
-    OLLAMA_URL      = "http://localhost:11434/api/generate"
+    OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
     OLLAMA_TIMEOUT  = 10000.0
 
     AVAILABLE_MODELS = {
-        "Qwen 2.5":    "qwen2.5:7b",
-        "Llama 3.1":   "llama3.1:8b",
-        "Phi 3":       "phi3:14b",
-        "Qwen 3.5":    "qwen3.5:35b",
-        "Mistral":     "mistral:7b"
+        "Qwen 2.5":    "qwen2.5:1.5b",
+        "Phi 3":       "phi3:3.8b-mini-4k-instruct-q4_0"
     }
 
-    DEFAULT_MODEL = "qwen2.5:7b"
+    DEFAULT_MODEL = "qwen2.5:1.5b"
 
     # ── DOMAIN CONFIGURATION ───────────────────────────────────────────────────
     # Set active domain via environment variable or hardcode here
@@ -81,9 +78,10 @@ class Settings:
         return cls.get_domain().field_names
 
     @classmethod
-    def set_uploaded_dataframe(cls, df) -> None:
+    def set_uploaded_dataframe(cls, df, filename=None) -> None:
         """ADDITION: Set temporary uploaded CSV (session only)"""
         cls._uploaded_df = df
+        cls._uploaded_filename = filename
 
     @classmethod
     def clear_uploaded_dataframe(cls) -> None:

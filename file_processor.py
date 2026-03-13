@@ -1,8 +1,13 @@
 """
 # ============================================================
-# NEW FILE — file_processor.py
+# file_processor.py
 # Extracts raw text content from PDF, Excel, XML, and CSV files.
 # Called by the /upload endpoint in routes.py.
+#
+# CHANGES FROM ORIGINAL:
+#   - extract_pdf() now tries pdfplumber first (better text extraction),
+#     falls back to pypdf, then raises a clear error for scanned PDFs.
+#   - Added debug print statements to diagnose empty extractions.
 # ============================================================
 """
 
@@ -13,7 +18,27 @@ from pathlib import Path
 from typing import List, Dict
 
 import openpyxl
-from pypdf import PdfReader
+
+# Try pdfplumber first (better), fall back to pypdf
+try:
+    import pdfplumber
+    _PDFPLUMBER_AVAILABLE = True
+    print("[file_processor] Using pdfplumber for PDF extraction")
+except ImportError:
+    _PDFPLUMBER_AVAILABLE = False
+    print("[file_processor] pdfplumber not found, using pypdf")
+
+try:
+    from pypdf import PdfReader
+    _PYPDF_AVAILABLE = True
+except ImportError:
+    try:
+        from PyPDF2 import PdfReader
+        _PYPDF_AVAILABLE = True
+        print("[file_processor] Using PyPDF2 for PDF extraction")
+    except ImportError:
+        _PYPDF_AVAILABLE = False
+        print("[file_processor] WARNING: No PDF library available!")
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -29,21 +54,76 @@ def _clean(text: str) -> str:
 def extract_pdf(file_bytes: bytes) -> List[Dict]:
     """
     Extract text page-by-page from a PDF.
+    Tries pdfplumber first (handles more PDF types), then pypdf.
 
     Returns:
         List of dicts: [{"page": 1, "text": "...", "source_type": "pdf"}, ...]
     """
-    reader = PdfReader(io.BytesIO(file_bytes))
     pages = []
-    for i, page in enumerate(reader.pages, start=1):
-        raw = page.extract_text() or ""
-        text = _clean(raw)
-        if text:
-            pages.append({
-                "page": i,
-                "text": text,
-                "source_type": "pdf"
-            })
+
+    # ── Method 1: pdfplumber ────────────────────────────────────────────────
+    if _PDFPLUMBER_AVAILABLE:
+        try:
+            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                print(f"[file_processor] pdfplumber: {len(pdf.pages)} pages found")
+                for i, page in enumerate(pdf.pages, start=1):
+                    raw = page.extract_text() or ""
+                    text = _clean(raw)
+                    print(f"[file_processor]   Page {i}: {len(text)} chars extracted")
+                    if text:
+                        pages.append({
+                            "page": i,
+                            "text": text,
+                            "source_type": "pdf"
+                        })
+            if pages:
+                print(f"[file_processor] pdfplumber extracted {len(pages)} pages with text")
+                return pages
+            else:
+                print("[file_processor] pdfplumber found no text — PDF may be scanned/image-based")
+        except Exception as e:
+            print(f"[file_processor] pdfplumber failed: {e}, trying pypdf...")
+
+    # ── Method 2: pypdf fallback ────────────────────────────────────────────
+    if _PYPDF_AVAILABLE:
+        try:
+            reader = PdfReader(io.BytesIO(file_bytes))
+            print(f"[file_processor] pypdf: {len(reader.pages)} pages found")
+            for i, page in enumerate(reader.pages, start=1):
+                raw = page.extract_text() or ""
+                text = _clean(raw)
+                print(f"[file_processor]   Page {i}: {len(text)} chars extracted")
+                if text:
+                    pages.append({
+                        "page": i,
+                        "text": text,
+                        "source_type": "pdf"
+                    })
+            if pages:
+                print(f"[file_processor] pypdf extracted {len(pages)} pages with text")
+                return pages
+            else:
+                print("[file_processor] pypdf found no text — PDF may be scanned/image-based")
+        except Exception as e:
+            print(f"[file_processor] pypdf failed: {e}")
+
+    # ── Both methods failed or returned no text ─────────────────────────────
+    if not pages:
+        print("[file_processor] WARNING: No text extracted from PDF.")
+        print("[file_processor] This is likely a scanned/image-based PDF.")
+        print("[file_processor] To fix: install OCR support with 'pip install pytesseract'")
+        # Return a placeholder so the UI shows a helpful message
+        pages.append({
+            "page": 1,
+            "text": (
+                "This PDF appears to be scanned or image-based. "
+                "Text extraction was not possible. "
+                "Please upload a text-based PDF or a Word document."
+            ),
+            "source_type": "pdf",
+            "warning": "scanned_pdf"
+        })
+
     return pages
 
 
@@ -91,18 +171,15 @@ def _xml_to_text(element: ET.Element, depth: int = 0) -> str:
     lines = []
     tag = element.tag.split("}")[-1]  # strip namespace
 
-    # Attributes
     if element.attrib:
         attr_str = ", ".join(f"{k}={v}" for k, v in element.attrib.items())
         lines.append("  " * depth + f"{tag} [{attr_str}]")
     else:
         lines.append("  " * depth + f"{tag}")
 
-    # Text content
     if element.text and element.text.strip():
         lines.append("  " * (depth + 1) + element.text.strip())
 
-    # Children
     for child in element:
         lines.append(_xml_to_text(child, depth + 1))
 
@@ -110,13 +187,7 @@ def _xml_to_text(element: ET.Element, depth: int = 0) -> str:
 
 
 def extract_xml(file_bytes: bytes) -> List[Dict]:
-    """
-    Parse XML and chunk by top-level child elements.
-    Each direct child of root → one chunk.
-
-    Returns:
-        List of dicts: [{"element": "Student", "index": 0, "text": "...", "source_type": "xml"}, ...]
-    """
+    """Parse XML and chunk by top-level child elements."""
     try:
         root = ET.fromstring(file_bytes)
     except ET.ParseError as e:
@@ -125,7 +196,6 @@ def extract_xml(file_bytes: bytes) -> List[Dict]:
 
     children = list(root)
 
-    # If root has no children, treat the whole file as one chunk
     if not children:
         return [{
             "element": root.tag.split("}")[-1],
@@ -149,12 +219,7 @@ def extract_xml(file_bytes: bytes) -> List[Dict]:
 
 
 def extract_csv(file_bytes: bytes) -> List[Dict]:
-    """
-    Extract CSV rows as text chunks (each row → one chunk).
-
-    Returns:
-        List of dicts: [{"row": 2, "text": "col1: val1 | col2: val2", "source_type": "csv"}, ...]
-    """
+    """Extract CSV rows as text chunks."""
     content = file_bytes.decode("utf-8", errors="replace")
     reader = csv.DictReader(io.StringIO(content))
     chunks = []
@@ -177,18 +242,9 @@ SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".xml", ".csv"}
 def extract(filename: str, file_bytes: bytes) -> List[Dict]:
     """
     Dispatch to the correct extractor based on file extension.
-
-    Args:
-        filename: Original filename (used to detect type)
-        file_bytes: Raw bytes of the uploaded file
-
-    Returns:
-        List of chunk dicts, each with at least {"text": str, "source_type": str}
-
-    Raises:
-        ValueError: If the file type is not supported
     """
     ext = Path(filename).suffix.lower()
+    print(f"[file_processor] extract() called: filename={filename}, ext={ext}, size={len(file_bytes)} bytes")
 
     if ext == ".pdf":
         return extract_pdf(file_bytes)

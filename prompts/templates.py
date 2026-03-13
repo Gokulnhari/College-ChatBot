@@ -95,6 +95,7 @@ Convert natural language questions into structured queries that can be executed 
 {examples_text}
 
 # Rules:
+- Output ONLY the JSON structure shown above. Do NOT add extra fields outside the structure.
 - Use exact field names from Available Fields
 - For text fields with PARTIAL names, use "contains" operator (case-insensitive)
   Example: {{"field": "Full_Name", "operator": "contains", "value": "meera"}}
@@ -116,72 +117,57 @@ Convert natural language questions into structured queries that can be executed 
 
 
 def get_response_generator_prompt(domain: DomainConfig, question: str, result: str) -> str:
-    """
-    Generate natural language response formatting prompt.
-
-    Args:
-        domain: Domain configuration
-        question: User's original question
-        result: Query execution result (pandas output)
-
-    Returns: Prompt for converting structured result to natural language
-    """
-    return f"""You are a helpful assistant for a {domain.description} system.
-
-Convert the query result into a natural, conversational response.
-
-User Question: {question}
-
-Query Result:
-{result}
-
-# Instructions:
-- Provide a clear, direct answer to the user's question
-- Use natural language, avoid technical jargon
-- If result is a number, include appropriate units/context
-- If result is a list, format it readably (bullets or numbered)
-- If result is empty/None, say "No {domain.entity_name_plural} found matching that criteria"
-- Be concise but friendly
-- Don't mention "DataFrame", "query", or technical terms
-- Don't add preambles like "Based on the data..." - just answer directly
-
-Response:
-"""
+    return f"""<|system|>
+You are a helpful assistant for a {domain.description} system.
+Convert the DATA into a natural English response to the QUESTION.
+- Never show raw JSON, brackets, or quotes
+- If data is a list of records, summarise in plain sentences
+- If data is a single value, state it directly
+- If no data found, say so clearly
+- 1-3 sentences maximum
+<|end|>
+<|user|>
+QUESTION: {question}
+DATA: {result}
+<|end|>
+<|assistant|>The answer is: """
 
 
 def get_rag_prompt(domain: DomainConfig, context: str, question: str) -> str:
     """
     Generate RAG (Retrieval-Augmented Generation) prompt for document Q&A.
-
-    Args:
-        domain: Domain configuration
-        context: Retrieved document chunks
-        question: User's question
-
-    Returns: Prompt for answering using document context
     """
     return f"""<|system|>
 You are a strict document reader for a {domain.description} system.
-You must answer using ONLY the text provided in the CONTEXT section.
-You are FORBIDDEN from using any outside knowledge.
 
-If the answer exists in the context, extract it word-for-word or paraphrase it closely.
-If the answer does not exist in the context, respond only with: "This information is not found in the uploaded document."
-Never mention GPT, OpenAI, Microsoft, or any information not present in the context.
+Your task is to answer the user's question using ONLY the provided context.
+
+STRICT RULES:
+- Use ONLY the information from the CONTEXT.
+- Do NOT add outside knowledge.
+- Do NOT explain unrelated topics.
+- If the question asks for a summary, limit the answer to 5–8 lines.
+- Prefer bullet points for explanations when possible.
+- Focus only on the parts of the context relevant to the question.
+- If the answer is not present in the context, respond EXACTLY with:
+  "This information is not found in the uploaded document."
+
+Do NOT mention AI models, GPT, OpenAI, or external knowledge.
+
 <|end|>
 
 <|user|>
 CONTEXT:
 {context}
 
-QUESTION: {question}
+QUESTION:
+{question}
 
-Rules:
-- Use ONLY the context above
-- Do NOT add your own knowledge about {domain.entity_name_plural} or {domain.name}
-- Do NOT make assumptions
-- Answer directly without preamble
-- If multiple {domain.entity_name_plural} are mentioned, be specific about each one
+Instructions:
+- Extract the answer from the context.
+- Be concise and precise.
+- Avoid repeating irrelevant sections.
+
 <|end|>
 
 <|assistant|>"""

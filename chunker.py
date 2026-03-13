@@ -11,8 +11,8 @@ from typing import List, Dict
 
 # ── configuration ───────────────────────────────────────────────────────────────
 
-CHUNK_SIZE = 400        # target characters per chunk
-CHUNK_OVERLAP = 80      # overlap between consecutive chunks
+CHUNK_SIZE = 700        # target characters per chunk
+CHUNK_OVERLAP = 100      # overlap between consecutive chunks
 
 
 # ── core splitter ───────────────────────────────────────────────────────────────

@@ -173,7 +173,7 @@ You MUST generate EXACTLY this structure:
   "aggregations": [
     {
       "column": "Student_ID",
-      "operation": "count",
+      "function": "count",
       "alias": "total"
     }
   ],
@@ -183,5 +183,5 @@ You MUST generate EXACTLY this structure:
 }
 
 
-Available columns: Student_ID, Full_Name, Gender, Class, Section, Math_Marks, Science_Marks, English_Marks, Social_Marks, Computer_Marks, Attendance_Percentage, Fee_Paid
+Common columns: Full_Name, Class, Section, Gender, Math_Marks, Attendance_Percentage, Fee_Paid, Email, Parent_Email
 """

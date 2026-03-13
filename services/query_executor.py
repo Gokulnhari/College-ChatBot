@@ -47,7 +47,7 @@ class QueryExecutor:
             query_type = structured_query.get("query_type", "aggregate")
 
             # Step 2: Execute based on query type
-            if query_type == "list":
+            if query_type in ("list", "filter", "sort"):
                 return self._execute_list_query(filtered_df, structured_query)
             else:
                 return self._execute_aggregate_query(filtered_df, structured_query)
@@ -65,6 +65,19 @@ class QueryExecutor:
             return df
 
         for filter_condition in filters:
+            # FIX: normalize any non-standard key → "column"
+            if "column" not in filter_condition:
+                for alt_key in ["field", "fieldinquiry", "col", "attribute", "name", "key"]:
+                    if alt_key in filter_condition:
+                        filter_condition["column"] = filter_condition.pop(alt_key)
+                        break
+                # Last resort: use any key that is not operator/value
+                if "column" not in filter_condition:
+                    for k in list(filter_condition.keys()):
+                        if k not in ("operator", "value", "column"):
+                            filter_condition["column"] = filter_condition.pop(k)
+                            break
+
             col = filter_condition["column"]
             op = filter_condition["operator"]
             val = filter_condition["value"]
@@ -163,7 +176,11 @@ class QueryExecutor:
     ) -> Any:
         """Execute an aggregate query (returns statistics)"""
 
-        # FIX: normalize "operation" → "function" (some models use wrong key)
+        # FIX 1: normalize "aggregation" (singular dict) → "aggregations" (list)
+        if "aggregation" in query and "aggregations" not in query:
+            query["aggregations"] = [query["aggregation"]]
+
+        # FIX 2: normalize "operation" → "function"
         aggregations = query.get("aggregations", [])
         for agg in aggregations:
             if "operation" in agg and "function" not in agg:
