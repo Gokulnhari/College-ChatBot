@@ -66,7 +66,42 @@ def extract_potential_full_name(question: str) -> str | None:
 
     return name_parts[0] if name_parts else None
 
+def _try_direct_answer(structured_query: dict, result: any) -> str | None:
+    query_type = structured_query.get("query_type")
 
+    # Handle list of dicts (most common return from query_executor)
+    if isinstance(result, list) and len(result) == 1:
+        row = result[0]
+        if isinstance(row, dict) and len(row) == 1:
+            val = list(row.values())[0]
+            if isinstance(val, (int, float)):
+                fn        = structured_query.get("aggregation", {}).get("function", "")
+                label_map = {"count": "total", "sum": "total", "avg": "average",
+                             "mean": "average", "min": "minimum", "max": "maximum"}
+                label = label_map.get(fn.lower(), "result")
+                if isinstance(val, float) and val == int(val):
+                    val = int(val)
+                elif isinstance(val, float):
+                    val = round(val, 2)
+                return f"The {label} is **{val}**."
+
+    # Handle DataFrame
+    if isinstance(result, pd.DataFrame) and not result.empty:
+        if query_type == "aggregate" and result.shape == (1, 1):
+            col   = result.columns[0]
+            value = result.iloc[0, 0]
+            fn    = structured_query.get("aggregation", {}).get("function", "")
+            label_map = {"count": "total", "sum": "total", "avg": "average",
+                         "mean": "average", "min": "minimum", "max": "maximum"}
+            label     = label_map.get(fn.lower(), fn)
+            pretty_col = col.replace("_", " ").lower()
+            if isinstance(value, float) and value == int(value):
+                value = int(value)
+            elif isinstance(value, float):
+                value = round(value, 2)
+            return f"The {label} {pretty_col} is **{value}**."
+
+    return None
 # ── /upload ────────────────────────────────────────────────────────────────────
 
 @router.post("/upload", response_model=UploadResponse)
@@ -179,9 +214,40 @@ async def agent_email_preview(request: EmailPreviewRequest):
         intent = request.parsed_intent if request.parsed_intent else \
                  await parse_email_intent(request.question, request.model)
 
+        print(f"[email_preview] intent filters: {intent.get('filters')}")
+        print(f"[email_preview] full intent: {intent}")
+
+        # ← ADD THIS: override LLM-hallucinated ID with regex-extracted one
+        import re as _re
+        _id_match = _re.search(r'\b(\d{3,6})\b', request.question)
+        if _id_match:
+            extracted_id = int(_id_match.group(1))
+            filters = intent.get("filters", [])
+            for f in filters:
+                col = f.get("column") or f.get("field")
+                if col == "Student_ID":
+                    f["value"] = extracted_id
+                    print(f"[email_preview] overrode ID filter value → {extracted_id}")
+            # If no Student_ID filter exists, add one
+            if not any((f.get("column") or f.get("field")) == "Student_ID" for f in filters):
+                filters.append({"column": "Student_ID", "operator": "==", "value": extracted_id})
+                intent["filters"] = filters
+
         df      = settings.get_dataframe()
         filters = intent.get("filters", [])
+
+        # Cast numeric filter values to match column dtypes
+        for f in filters:
+            col = f.get("column") or f.get("field")
+            val = f.get("value")
+            if col and col in df.columns and pd.api.types.is_numeric_dtype(df[col].dtype):
+                try:
+                    f["value"] = int(val) if "." not in str(val) else float(val)
+                except (ValueError, TypeError):
+                    pass
+
         matched_df = resolve_recipients(filters, df) if filters else df
+        # ... rest unchanged
 
         if matched_df.empty:
             return {
@@ -204,7 +270,6 @@ async def agent_email_preview(request: EmailPreviewRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Email preview error: {str(e)}")
-
 
 # ── /agent/email/send ──────────────────────────────────────────────────────────
 
@@ -342,15 +407,21 @@ async def ask_question(request: QuestionRequest):
         conversation_history=conversation_history
     )
 
-    if _extracted_id and isinstance(structured_query.get("filters"), list):
-        filters = structured_query["filters"]
-        has_id_filter = any(
-            f.get("column") == "Student_ID" or f.get("field") == "Student_ID"
-            for f in filters
-        )
-        if not has_id_filter:
-            filters.append({"column": "Student_ID", "operator": "==", "value": _extracted_id})
-
+    if _extracted_id:
+        if structured_query.get("filters") is None:
+            structured_query["filters"] = []
+        if isinstance(structured_query["filters"], list):
+            filters = structured_query["filters"]
+            has_id_filter = any(
+                f.get("column") == "Student_ID" or f.get("field") == "Student_ID"
+                for f in filters
+            )
+            if not has_id_filter:
+                filters.append({
+                    "column": "Student_ID",
+                    "operator": "==",
+                    "value": int(_extracted_id)
+                })
     if structured_query.get("query_type") == "error":
         return QuestionResponse(
             response=structured_query.get("error", "Sorry, I encountered an error."),
@@ -371,10 +442,16 @@ async def ask_question(request: QuestionRequest):
             structured_query=structured_query, raw_result=None, mode="csv",
         )
 
-    result           = query_executor.execute(structured_query)
-    natural_response = await llm_service.generate_natural_response(
-        request.question, result, model_name=request.model
-    )
+ # CORRECT - indented inside ask_question
+    print(f"[routes] structured_query: {structured_query}")  # ← ADD
+    result = query_executor.execute(structured_query)
+    print(f"[routes] result: {result}, type: {type(result).__name__}")  # ← ADD
+
+    natural_response = _try_direct_answer(structured_query, result)
+    if natural_response is None:
+        natural_response = await llm_service.generate_natural_response(
+            request.question, result, model_name=request.model
+        )
 
     return QuestionResponse(
         response=natural_response, structured_query=structured_query,

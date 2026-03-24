@@ -2,6 +2,8 @@
 Query executor service.
 Handles safe execution of structured queries against the DataFrame.
 """
+from narwhals import col
+from narwhals import col
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, Optional, List
@@ -39,6 +41,9 @@ class QueryExecutor:
 
             # Step 1: Apply filters
             filtered_df = self._apply_filters(filtered_df, structured_query.get("filters"))
+
+            val = smart_type_match(self.df[col], val)
+            print(f"[filter_debug] col={col}, val={val}, type={type(val).__name__}, col_dtype={self.df[col].dtype}")
 
             if filtered_df.empty:
                 print("Filtered DataFrame is empty. Returning None.")

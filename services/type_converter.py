@@ -26,21 +26,21 @@ def smart_type_match(column_series: pd.Series, filter_value: Any) -> Any:
         >>> col = df['Gender']  # dtype: object (string)
         >>> smart_type_match(col, "Male")  # Returns: "Male" (str)
     """
-    column_dtype = column_series.dtype
-    
-    # If column is numeric (int or float)
+    def smart_type_match(column_series: pd.Series, filter_value: Any) -> Any:
+        column_dtype = column_series.dtype
+
     if pd.api.types.is_numeric_dtype(column_dtype):
         try:
             if isinstance(filter_value, str):
-                # Check if it's a float or int
+                filter_value = filter_value.strip()  # ← strip whitespace too
                 if '.' in filter_value:
                     return float(filter_value)
                 else:
                     return int(filter_value)
+            elif hasattr(filter_value, 'item'):  # numpy scalar
+                return filter_value.item()
             return filter_value
         except (ValueError, TypeError):
-            # If conversion fails, return as-is
             return filter_value
     else:
-        # If column is string/object, convert to string
         return str(filter_value)

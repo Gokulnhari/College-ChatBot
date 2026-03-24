@@ -87,6 +87,7 @@ class Settings:
     def clear_uploaded_dataframe(cls) -> None:
         """ADDITION: Revert to original CSV"""
         cls._uploaded_df = None
+        cls._uploaded_filename = None 
 
     @classmethod
     def get_dataframe(cls) -> pd.DataFrame:

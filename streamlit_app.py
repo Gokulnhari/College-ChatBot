@@ -7,6 +7,7 @@ FIXES:
 """
 import requests
 import streamlit as st
+from chat_history import new_chat_id, save_chat, load_chat, list_chats, delete_chat, derive_title
 
 API_BASE          = "http://127.0.0.1:8000/api/v1"
 ASK_URL           = f"{API_BASE}/ask"
@@ -114,10 +115,42 @@ if "model_option"  not in st.session_state: st.session_state.model_option = "qwe
 if "pending_email" not in st.session_state: st.session_state.pending_email = None
 if "last_uploaded" not in st.session_state: st.session_state.last_uploaded = None
 if "upload_done"   not in st.session_state: st.session_state.upload_done = False
-
+if "last_uploaded_name" not in st.session_state: st.session_state.last_uploaded_name = None
+if "last_uploaded_type" not in st.session_state: st.session_state.last_uploaded_type = None
+if "current_chat_id" not in st.session_state:
+    st.session_state.current_chat_id = new_chat_id()
 
 # ── sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
+    # ── Chat History ───────────────────────────────────────────────
+    if st.button("➕ New Chat", use_container_width=True):
+        st.session_state.messages = []
+        st.session_state.pending_email = None
+        st.session_state.current_chat_id = new_chat_id()
+        st.rerun()
+
+    st.subheader("🕘 Recent chats")
+    for chat in list_chats():
+        col_a, col_b = st.columns([5, 1])
+        label = chat["title"][:28] + ("…" if len(chat["title"]) > 28 else "")
+        active = chat["id"] == st.session_state.current_chat_id
+        if col_a.button(("▶ " if active else "") + label,
+                        key=f"ch_{chat['id']}", use_container_width=True):
+            msgs, _ = load_chat(chat["id"])
+            st.session_state.messages = msgs
+            st.session_state.current_chat_id = chat["id"]
+            st.session_state.pending_email = None
+            st.rerun()
+        if col_b.button("🗑", key=f"del_{chat['id']}"):
+            delete_chat(chat["id"])
+            if chat["id"] == st.session_state.current_chat_id:
+                st.session_state.messages = []
+                st.session_state.current_chat_id = new_chat_id()
+            st.rerun()
+
+    st.divider()
+    # ── Domain Selection (your existing code continues below) ──────
+    
     st.header("🎯 Domain Selection")
     try:
         domain_resp = requests.get(f"{API_BASE}/domain-info", timeout=3)
@@ -225,6 +258,7 @@ with st.sidebar:
                     try:
                         r = requests.post(REMOVE_URL, json={"filename": fname}, timeout=10)
                         if r.ok:
+                            st.session_state.pending_email = None
                             st.success(f"Removed {fname}")
                             st.rerun()
                         else:
@@ -254,13 +288,20 @@ with st.sidebar:
 
 # ── email preview modal ────────────────────────────────────────────────────────
 def render_email_preview(pending: dict):
-    preview         = pending.get("preview", {})
-    intent          = pending.get("intent", {})
+    preview         = pending.get("preview") or {}
+    intent          = pending.get("intent") or {}
     recipients_full = pending.get("recipients", [])
     warning         = pending.get("warning")
 
     if warning:
         st.warning(warning)
+
+    if not preview:
+        st.error("⚠️ No recipients found. The uploaded CSV may have been removed.")
+        if st.button("❌ Close"):
+            st.session_state.pending_email = None
+            st.rerun()
+        return
 
     st.markdown("### 📧 Email Preview — Please Review Before Sending")
     col1, col2 = st.columns(2)
@@ -374,11 +415,28 @@ bottom_file = st.file_uploader(
     key="bottom_uploader",
 )
 
+if "last_uploaded_name" not in st.session_state: st.session_state.last_uploaded_name = None
+
 if bottom_file is not None:
     file_id = f"{bottom_file.name}_{bottom_file.size}"
     if file_id != st.session_state.last_uploaded:
-        st.session_state.last_uploaded = file_id
-        st.session_state.upload_done   = False
+        st.session_state.last_uploaded      = file_id
+        st.session_state.last_uploaded_name = bottom_file.name
+        st.session_state.upload_done        = False
+
+else:
+    # ── File was removed from uploader (user clicked ✕) ──────────────
+    if st.session_state.last_uploaded is not None:
+        fname = st.session_state.get("last_uploaded_name", "uploaded_file.csv")
+        try:
+            requests.post(REMOVE_URL, json={"filename": fname}, timeout=5)
+        except Exception:
+            pass
+        st.session_state.last_uploaded      = None
+        st.session_state.last_uploaded_name = None
+        st.session_state.upload_done        = False
+        st.rerun()
+    # ─────────────────────────────────────────────────────────────────
 
 if bottom_file is not None and not st.session_state.upload_done:
     with st.spinner(f"Indexing {bottom_file.name}…"):
@@ -422,7 +480,7 @@ with col_newchat:
         except Exception:
             pass
         st.rerun()
-
+  
 
 # ── chat input ─────────────────────────────────────────────────────────────────
 if prompt := st.chat_input("Ask about your documents, the school dataset, or say 'send email to…'"):
@@ -510,6 +568,11 @@ if prompt := st.chat_input("Ask about your documents, the school dataset, or say
                     if rag_sources:
                         msg["rag_sources"] = rag_sources
                     st.session_state.messages.append(msg)
+
+                    
+                    save_chat(st.session_state.current_chat_id,
+                              st.session_state.messages,
+                              title=derive_title(st.session_state.messages))
 
                 else:
                     err = f"Backend error ({response.status_code}): {response.text}"

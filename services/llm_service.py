@@ -22,7 +22,6 @@ from prompts.templates import (
 
 
 class LLMService:
-    """Service for interacting with the LLM"""
 
     def __init__(self):
         self.url           = settings.OLLAMA_URL
@@ -32,14 +31,19 @@ class LLMService:
     # ── classify_question ─────────────────────────────────────────────────────
 
     async def classify_question(self, question: str, model_name: str = None, conversation_history: List[Dict] = None) -> str:
-        """
-        Classify whether question is database-related or general chat.
-        Returns: 'database' or 'general'
-        """
         question_lower = question.lower().strip()
 
-        # HEURISTIC 1: Personal/conversational questions → always general
-        # These should never hit the database pipeline regardless of history.
+        # HEURISTIC 3: Obvious database keywords → always database
+        # Bypasses LLM entirely for clear data queries
+        database_keywords = [
+            "count", "total", "how many", "average", "marks", "attendance",
+            "score", "grade", "fee", "student", "class", "section", "rank",
+            "top", "bottom", "highest", "lowest", "pass", "fail", "list"
+        ]
+        if any(kw in question_lower for kw in database_keywords):
+            print(f"[classify] Keyword match: '{question}' → database")
+            return "database"
+
         personal_patterns = [
             "my name", "what is my", "who am i", "do you remember",
             "what did i say", "what did i tell", "i told you", "i said",
@@ -49,7 +53,21 @@ class LLMService:
             print(f"[classify] Personal question detected: '{question}' → general")
             return "general"
 
-        # HEURISTIC 2: Short follow-up questions with database history → database
+        # ── Database follow-up patterns ────────────────────────────────────────
+        follow_up_patterns = [
+            "whats the name", "what is the name", "the name of",
+            "their name", "his name", "her name",
+            "same student", "that student", "this student",
+            "full details", "more details", "all details",
+            "full information", "more information",
+            "tell me more", "show more",
+        ]
+        if any(p in question_lower for p in follow_up_patterns):
+            if not any(kw in question_lower for kw in ["email", "send", "mail", "notify"]):
+                print(f"[classify] Follow-up pattern detected: '{question}' → database")
+                return "database"
+        # ──────────────────────────────────────────────────────────────────────
+
         if conversation_history and len(conversation_history) > 0:
             word_count = len(question_lower.split())
             if word_count <= 3:
@@ -66,9 +84,6 @@ class LLMService:
 
         model_to_use = model_name if model_name else self.default_model
         domain       = settings.get_domain()
-        # Do NOT inject conversation history here — small models echo it back
-        # as part of their answer, causing misclassification. The classifier
-        # only needs the current question to decide: database or general.
         prompt       = get_classification_prompt(domain, question)
 
         print(f"[classify] Classifying: '{question}' (history: {len(conversation_history or [])} turns)")
@@ -81,12 +96,8 @@ class LLMService:
                 )
                 response.raise_for_status()
 
-            data   = response.json()
-            raw    = data.get("response", "").strip().lower()
-
-            # FIX: Extract only the FIRST word of the FIRST line to avoid
-            # misclassification when the LLM outputs extra explanation text.
-            # e.g. "general\n\nThe database stores..." → "general"
+            data       = response.json()
+            raw        = data.get("response", "").strip().lower()
             first_word = raw.splitlines()[0].strip().split()[0] if raw.strip() else "general"
 
             classification = "database" if first_word == "database" else "general"
@@ -106,7 +117,7 @@ class LLMService:
         model_to_use = model_name if model_name else self.default_model
         print("Using Model:", model_to_use)
 
-        domain     = settings.get_domain()
+        domain      = settings.get_domain()
         base_prompt = get_query_planner_prompt(domain)
 
         context_section = ""
@@ -172,6 +183,57 @@ class LLMService:
         else:
             formatted_result = str(result)
 
+            print(f"[bypass_check] type={type(result).__name__} value={result}")  # ← ADD THIS
+
+        # ── Aggregate bypass — skip LLM for single number results ─────────────
+        numeric_val = None
+
+        
+
+        # Handle plain number (from _format_result single-cell return)
+        if isinstance(result, (int, float)):
+            numeric_val = result
+        elif hasattr(result, 'item'):  # numpy scalar (np.float64, np.int64)
+            numeric_val = result.item()
+
+        # Handle list of dicts
+        elif isinstance(result, list) and len(result) == 1:
+            row = result[0]
+            if isinstance(row, dict)  and len(row) == 1: 
+                for v in row.values():
+                    if isinstance(v, (int, float)) or hasattr(v, 'item'):
+                        numeric_val = v.item() if hasattr(v, 'item') else v
+                        break
+
+        if numeric_val is not None:
+            q = question.lower()
+            if any(kw in q for kw in ["count", "how many", "total", "number of"]):
+                return f"There are {int(numeric_val)} students in the database."
+            elif any(kw in q for kw in ["average", "mean"]):
+                return f"The average is {round(float(numeric_val), 2)}."
+            elif any(kw in q for kw in ["highest", "maximum", "max"]):
+                return f"The highest value is {numeric_val}."
+            elif any(kw in q for kw in ["lowest", "minimum", "min"]):
+                return f"The lowest value is {numeric_val}."
+            else:
+                return f"The result is {numeric_val}."
+            
+
+            
+      
+        # ─────────────────────────────────────────────────────────────────────
+
+        if isinstance(result, list) and len(result) == 1:
+            row = result[0]
+            if isinstance(row, dict) and len(row) > 1:
+                parts = [f"**{k.replace('_', ' ')}:** {v}"
+                         for k, v in row.items()
+                         if v not in (None, "", "nan")]
+                return "\n".join(parts)
+
+        domain = settings.get_domain()   # ← existing line, nothing changes below
+        prompt = get_response_generator_prompt(domain, question, formatted_result)
+
         domain = settings.get_domain()
         prompt = get_response_generator_prompt(domain, question, formatted_result)
 
@@ -186,14 +248,14 @@ class LLMService:
             data          = response.json()
             response_text = data.get("response", f"The result is: {result}").strip()
 
-            for prefix in ["Response:", "Here's a response:", "Here's a friendly response:", "The user asked", "It looks like"]:
+            for prefix in ["Response:", "Here's a response:", "Here's a friendly response:",
+                           "The user asked", "It looks like", "The answer is:"]:
                 if response_text.startswith(prefix):
                     response_text = response_text[len(prefix):].strip()
 
             if response_text.startswith('"') and response_text.endswith('"'):
                 response_text = response_text[1:-1]
 
-                 # ── JSON fallback: if model still returned structured data ──────────
             if response_text.strip().startswith("{") or response_text.strip().startswith("["):
                 try:
                     parsed = json.loads(response_text)
@@ -205,7 +267,15 @@ class LLMService:
                         response_text = f"Found {len(parsed)} record(s)."
                 except Exception:
                     pass
-            # ── END JSON fallback ───────────────────────────────────────────────
+
+            sentences = re.split(r'(?<=[.!?])\s+', response_text.strip())
+            if len(sentences) > 2:
+                response_text = " ".join(sentences[:2])
+
+            if len(response_text) > 200:
+                truncated  = response_text[:200]
+                last_space = truncated.rfind(' ')
+                response_text = truncated[:last_space] + "."
 
             return response_text
 
@@ -221,17 +291,14 @@ class LLMService:
         self,
         question: str,
         model_name: str = None,
-        conversation_history: List[Dict] = None,  # FIX: added history param
+        conversation_history: List[Dict] = None,
     ) -> str:
-        """Handle general chat questions (non-database related)."""
         model_to_use = model_name if model_name else self.default_model
 
-        # FIX: Build a conversational prompt that includes prior turns so the
-        # LLM can remember things like names, preferences, and context.
         if conversation_history:
             history_lines = []
-            for msg in conversation_history[-6:]:   # last 6 turns is enough
-                role  = "User" if msg["role"] == "user" else "Assistant"
+            for msg in conversation_history[-6:]:
+                role = "User" if msg["role"] == "user" else "Assistant"
                 history_lines.append(f"{role}: {msg['content'][:300]}")
             history_block = "\n".join(history_lines)
             prompt = (
@@ -265,7 +332,6 @@ class LLMService:
     # ── classify_rag_intent ───────────────────────────────────────────────────
 
     async def classify_rag_intent(self, question: str, model_name: str = None) -> dict:
-        """Classify RAG query intent dynamically."""
         model_to_use = model_name if model_name else self.default_model
 
         prompt = f"""<|system|>
@@ -299,9 +365,10 @@ Question: {question}
             data   = response.json()
             raw    = data.get("response", "{}").strip()
             result = json.loads(raw)
+            hint = result.get("retrieval_hint", "").strip() or question
             return {
                 "intent":         result.get("intent", "general"),
-                "retrieval_hint": result.get("retrieval_hint", question),
+                "retrieval_hint": hint,
                 "top_k":          int(result.get("top_k", 5)),
             }
         except Exception:
@@ -342,7 +409,6 @@ CONTEXT:
 TASK: Summarize all major topics found in this document.
 <|end|>
 <|assistant|>""",
-
             "compare": f"""<|system|>
 You are a comparison analyst. Use ONLY the context below.
 <|end|>
@@ -352,7 +418,6 @@ CONTEXT:
 QUESTION: {question}
 <|end|>
 <|assistant|>""",
-
             "list": f"""<|system|>
 You are a document reader. Extract and list all relevant items as bullet points.
 <|end|>
@@ -362,7 +427,6 @@ CONTEXT:
 QUESTION: {question}
 <|end|>
 <|assistant|>""",
-
             "explain": f"""<|system|>
 You are a document explainer. Give a clear detailed explanation using the context.
 <|end|>
@@ -372,7 +436,6 @@ CONTEXT:
 QUESTION: {question}
 <|end|>
 <|assistant|>""",
-
             "lookup": f"""<|system|>
 You are a fact extractor. Extract the answer directly from the context.
 Only say "not found" if the topic is completely absent.
@@ -383,7 +446,6 @@ CONTEXT:
 QUESTION: {question}
 <|end|>
 <|assistant|>""",
-
             "general": f"""<|system|>
 You are a document assistant. Use ONLY the context below to answer.
 If not found say: "This information is not in the uploaded document."
