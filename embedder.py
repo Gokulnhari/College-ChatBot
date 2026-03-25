@@ -85,7 +85,7 @@ class SklearnEmbedder:
         qvec = self.embed_query(query)
         scores = self._matrix @ qvec          # cosine similarity (already L2-normalised)
         top_idx = np.argsort(scores)[::-1][:top_k]
-        return [(self._chunks[i], float(scores[i])) for i in top_idx if scores[i] > 0.01]
+        return [(self._chunks[i], float(scores[i])) for i in top_idx if scores[i] > 0.05]
 
     def add_chunks(self, new_chunks: List[Dict]) -> None:
         """Add more chunks and re-fit the vectoriser on the full corpus."""
@@ -207,7 +207,7 @@ class NumpyEmbedder:
         qvec = self._vectorize(tokens)
         scores = self._matrix @ qvec
         top_idx = np.argsort(scores)[::-1][:top_k]
-        return [(self._chunks[i], float(scores[i])) for i in top_idx if scores[i] > 0.01]
+        return [(self._chunks[i], float(scores[i])) for i in top_idx if scores[i] > 0.05]
 
     def add_chunks(self, new_chunks: List[Dict]) -> None:
         self.build_index(self._chunks + new_chunks)

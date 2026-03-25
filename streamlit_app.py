@@ -222,6 +222,10 @@ with st.sidebar:
     st.divider()
 
     st.subheader("📤 Upload a file")
+    st.caption(
+    "📄 **PDF, XML** → RAG mode (document reading)\n\n"
+    "📊 **Excel, CSV** → CSV mode (database queries)"
+    )
     sidebar_file = st.file_uploader(
         "PDF, Excel, XML, CSV (max 200MB)",
         type=["pdf", "xlsx", "xls", "xml", "csv"],

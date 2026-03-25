@@ -114,18 +114,19 @@ class Settings:
     @classmethod
     def get_mode(cls) -> str:
         """
-        # RAG ADDITION
         Auto-detect whether to run in RAG mode or CSV mode.
 
         Logic:
-          - If the vector store has indexed data → "rag"
-          - Otherwise                            → "csv"
-
-        This is called per-request in routes.py so it reacts live
-        when the user uploads a file.
+          - If an Excel/CSV is uploaded → "csv" (database mode)
+          - If the vector store has indexed data (PDF/XML) → "rag"
+          - Otherwise → "csv"
         """
+        # Excel/CSV uploaded → always CSV mode
+        if cls._uploaded_df is not None:
+            return "csv"
+        # PDF/XML indexed → RAG mode
         try:
-            from vector_store import vector_store   # local import avoids circular dep
+            from vector_store import vector_store
             return "rag" if vector_store.status()["has_data"] else "csv"
         except Exception:
             return "csv"

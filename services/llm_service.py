@@ -117,8 +117,12 @@ class LLMService:
         model_to_use = model_name if model_name else self.default_model
         print("Using Model:", model_to_use)
 
-        domain      = settings.get_domain()
-        base_prompt = get_query_planner_prompt(domain)
+        domain = settings.get_domain()
+        
+        # Use actual DataFrame columns instead of hardcoded domain fields
+        df = settings.get_dataframe()
+        actual_columns = list(df.columns) if df is not None else domain.field_names
+        base_prompt = get_query_planner_prompt(domain, actual_columns=actual_columns)
 
         context_section = ""
         if conversation_history:
@@ -400,8 +404,8 @@ Question: {question}
 
         intent_prompts = {
             "summarize": f"""<|system|>
-You are a document summarizer. Use ONLY the context below.
-Write a structured summary with one short paragraph per major topic.
+You are a strict document summarizer. Use ONLY the context below. Do NOT add outside knowledge.
+Write a structured summary covering each major topic found in the context. Keep the summary under 200 words.
 <|end|>
 <|user|>
 CONTEXT:
@@ -410,7 +414,8 @@ TASK: Summarize all major topics found in this document.
 <|end|>
 <|assistant|>""",
             "compare": f"""<|system|>
-You are a comparison analyst. Use ONLY the context below.
+You are a strict document reader. Use ONLY the context below. Do NOT add outside knowledge.
+If the comparison is not in the context, say: "This information is not found in the uploaded document."
 <|end|>
 <|user|>
 CONTEXT:
@@ -419,7 +424,9 @@ QUESTION: {question}
 <|end|>
 <|assistant|>""",
             "list": f"""<|system|>
-You are a document reader. Extract and list all relevant items as bullet points.
+You are a strict document reader. Extract and list ONLY items explicitly mentioned in the context below.
+Do NOT add outside knowledge. Use bullet points.
+If not found say: "This information is not found in the uploaded document."
 <|end|>
 <|user|>
 CONTEXT:
@@ -428,7 +435,10 @@ QUESTION: {question}
 <|end|>
 <|assistant|>""",
             "explain": f"""<|system|>
-You are a document explainer. Give a clear detailed explanation using the context.
+You are a strict document reader. Answer using ONLY the exact words and facts from the context below.
+Do NOT add outside knowledge, definitions, or terms not present in the context.
+Keep the answer under 150 words.
+If something is not in the context, do not include it.
 <|end|>
 <|user|>
 CONTEXT:
@@ -437,8 +447,9 @@ QUESTION: {question}
 <|end|>
 <|assistant|>""",
             "lookup": f"""<|system|>
-You are a fact extractor. Extract the answer directly from the context.
-Only say "not found" if the topic is completely absent.
+You are a strict fact extractor. Extract the answer ONLY from the context below.
+Do NOT add outside knowledge. Quote or closely paraphrase the relevant part.
+If not found say: "This information is not found in the uploaded document."
 <|end|>
 <|user|>
 CONTEXT:
@@ -447,8 +458,9 @@ QUESTION: {question}
 <|end|>
 <|assistant|>""",
             "general": f"""<|system|>
-You are a document assistant. Use ONLY the context below to answer.
-If not found say: "This information is not in the uploaded document."
+You are a strict document assistant. Answer using ONLY the context below.
+Do NOT add outside knowledge. Do NOT guess or infer beyond what is written.
+If not found say: "This information is not found in the uploaded document."
 <|end|>
 <|user|>
 CONTEXT:
@@ -458,7 +470,29 @@ QUESTION: {question}
 <|assistant|>""",
         }
 
-        prompt = intent_prompts.get(intent, intent_prompts["general"])
+        # Detect if source is structured data (Excel/CSV)
+        is_structured = any(
+            c.get("source_type") in ("excel", "csv")
+            for c in chunks
+        )
+
+        # Override prompt for structured data lookups
+        if is_structured:
+            prompt = f"""<|system|>
+You are a strict data reader. Copy values EXACTLY from the context below.
+Do NOT modify, paraphrase, or replace any IDs, codes, or numbers.
+List ALL fields found for the requested record, one per line as "Field: Value".
+Do NOT add outside knowledge.
+If not found say: "This information is not found in the uploaded document."
+<|end|>
+<|user|>
+CONTEXT:
+{context}
+QUESTION: {question}
+<|end|>
+<|assistant|>"""
+        else:
+            prompt = intent_prompts.get(intent, intent_prompts["general"])
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:

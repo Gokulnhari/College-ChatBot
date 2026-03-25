@@ -2,8 +2,6 @@
 Query executor service.
 Handles safe execution of structured queries against the DataFrame.
 """
-from narwhals import col
-from narwhals import col
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, Optional, List
@@ -20,30 +18,11 @@ class QueryExecutor:
         self.df = settings.get_dataframe()
 
     def execute(self, structured_query: Dict[str, Any]) -> Any:
-        """
-        Execute a structured query on the DataFrame.
-
-        Args:
-            structured_query: Dictionary containing query specifications
-
-        Returns:
-            Query result (can be number, list of dicts, or None)
-
-        Security:
-            - Validates all operators against whitelist
-            - Validates all columns exist
-            - Validates all aggregation functions
-            - No eval() or exec() used
-        """
         try:
             filtered_df = self.df.copy()
             print(f"Initial DataFrame shape: {filtered_df.shape}")
 
-            # Step 1: Apply filters
             filtered_df = self._apply_filters(filtered_df, structured_query.get("filters"))
-
-            val = smart_type_match(self.df[col], val)
-            print(f"[filter_debug] col={col}, val={val}, type={type(val).__name__}, col_dtype={self.df[col].dtype}")
 
             if filtered_df.empty:
                 print("Filtered DataFrame is empty. Returning None.")
@@ -51,7 +30,6 @@ class QueryExecutor:
 
             query_type = structured_query.get("query_type", "aggregate")
 
-            # Step 2: Execute based on query type
             if query_type in ("list", "filter", "sort"):
                 return self._execute_list_query(filtered_df, structured_query)
             else:
@@ -59,6 +37,7 @@ class QueryExecutor:
 
         except Exception as e:
             return {"error": str(e)}
+     
 
     def _apply_filters(
         self,
@@ -228,7 +207,16 @@ class QueryExecutor:
         if grouped:
             result_df = pd.DataFrame(results).reset_index()
         else:
-            result_df = pd.DataFrame([results])
+            # Convert any pandas Series/numpy scalars to plain Python values
+            scalar_results = {}
+            for k, v in results.items():
+                if hasattr(v, 'item'):
+                    scalar_results[k] = v.item()
+                elif hasattr(v, 'values'):
+                    scalar_results[k] = v.values[0] if len(v) > 0 else None
+                else:
+                    scalar_results[k] = v
+            result_df = pd.DataFrame([scalar_results])
 
         # Sort
         result_df = self._apply_sort(result_df, query.get("sort_by"))

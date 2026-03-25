@@ -1,3 +1,5 @@
+print("LOADED FILE:", __file__)
+
 """
 Domain-agnostic prompt templates.
 """
@@ -34,7 +36,8 @@ Answer:
 """
 
 
-def get_query_planner_prompt(domain: DomainConfig) -> str:
+def get_query_planner_prompt(domain: DomainConfig, actual_columns: list = None) -> str:
+    print("UPDATED FUNCTION CALLED")
     # Get first ID-like field for count queries
     id_field = next(
         (f['name'] for f in domain.fields if 'id' in f['name'].lower()),

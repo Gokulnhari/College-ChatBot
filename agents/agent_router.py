@@ -24,22 +24,33 @@ User message: {question}
 
 EMAIL_PARSE_PROMPT = """You are an email intent parser for a school management system.
 
-Extract the email details from the user message.
+Extract the email details FROM THE USER MESSAGE BELOW.
+Use the EXACT topic, event, date, and details mentioned in the message for the subject and body.
+Do NOT use generic placeholders like "Important Announcement".
 
 Available columns in the student database:
 Student_ID, Full_Name, Gender, Class, Section, Math_Marks, Science_Marks,
 English_Marks, Social_Marks, Computer_Marks, Attendance_Percentage, Fee_Paid
 
 Return ONLY valid JSON in this exact format:
-{
-  "target": "student" | "parent" | "guardian",
+{{
+  "target": "student",
   "filters": [
     {{"column": "ColumnName", "operator": "==", "value": <value>}}
-],
-  "subject": "Email subject line here",
-  "body_template": "Dear {name},\n\nEmail body here.\n\nRegards,\nSchool Administration",
-  "send_all": true | false
-}
+  ],
+  "subject": "Write a specific subject based on the user message",
+  "body_template": "Dear {{name}},\\n\\nWrite a specific body based on the user message.\\n\\nRegards,\\nSchool Administration",
+  "send_all": false
+}}
+
+EXAMPLES:
+User: "send email to class 10 about sports day on 31-03-26"
+Subject: "Sports Day - 31st March 2026"
+Body: "Dear {{name}},\\n\\nThis is to inform you that Sports Day will be held on 31st March 2026.\\n\\nKindly make necessary arrangements to attend.\\n\\nRegards,\\nSchool Administration"
+
+User: "send email to student id 5001 about fee due"
+Subject: "Fee Payment Reminder"
+Body: "Dear {{name}},\\n\\nThis is a reminder that your fee payment is due. Please clear your dues at the earliest.\\n\\nRegards,\\nSchool Administration"
 
 User message: {question}
 """
@@ -99,6 +110,7 @@ async def parse_email_intent(question: str, model_name: str = None) -> Dict:
             resp.raise_for_status()
         data = resp.json()
         raw  = data.get("response", "{}").strip()
+        print(f"[email_parse] raw LLM response: {raw[:200]}")
         try:
             intent = json.loads(raw)
         except json.JSONDecodeError:

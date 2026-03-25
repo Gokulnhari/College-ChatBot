@@ -2,6 +2,7 @@
 API routes for the application.
 """
 from fastapi import APIRouter, UploadFile, File, HTTPException
+from embedder import embedder
 import json
 import re
 import httpx
@@ -118,7 +119,7 @@ async def upload_file(file: UploadFile = File(...)):
 
     file_bytes = await file.read()
 
-    # ── FIX 1: CSV sets active database, stores real filename ──────────────────
+    # ── CSV and Excel → CSV pipeline (database mode) ───────────────────────
     if ext == ".csv":
         try:
             df = pd.read_csv(io.BytesIO(file_bytes))
@@ -133,6 +134,21 @@ async def upload_file(file: UploadFile = File(...)):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"CSV load error: {str(e)}")
 
+    if ext in (".xlsx", ".xls"):
+        try:
+            df = pd.read_excel(io.BytesIO(file_bytes))
+            settings.set_uploaded_dataframe(df, filename=filename)
+            query_executor.df = df
+            return UploadResponse(
+                filename=filename,
+                source_type="excel",
+                chunks_added=len(df),
+                total_chunks=len(df),
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Excel load error: {str(e)}")
+
+    # ── PDF/XML → RAG pipeline ─────────────────────────────────────────────
     try:
         result = vector_store.add_file(filename, file_bytes)
     except ValueError as e:
@@ -196,12 +212,11 @@ async def health_check():
 
 @router.post("/remove-file")
 async def remove_file(request: RemoveFileRequest):
-    if request.filename.endswith(".csv"):
+    if request.filename.endswith(".csv") or request.filename.endswith((".xlsx", ".xls")):
         settings.clear_uploaded_dataframe()
         query_executor.df = settings.get_dataframe()
-        vector_store.remove_file(request.filename)
         return {"filename": request.filename, "removed": 1,
-                "message": "Uploaded CSV cleared. Reverted to original database."}
+                "message": "Uploaded file cleared. Reverted to original database."}
     result = vector_store.remove_file(request.filename)
     return result
 
@@ -325,15 +340,29 @@ async def ask_question(request: QuestionRequest):
         intent      = rag_intent["intent"]
         search_hint = rag_intent["retrieval_hint"]
 
-        import re as _re
-        entities = _re.findall(r'\b[A-Z][a-zA-Z]+\b', request.question)
-        for entity in entities:
-            if entity not in search_hint and entity not in ("Give", "What", "How", "Why", "Tell", "Show"):
-                search_hint = f"{entity} {search_hint}"
-                break
-        top_k  = rag_intent["top_k"]
-        chunks = vector_store.search(search_hint, top_k=top_k)
-        print(f"[RAG] intent={intent} | search_hint='{search_hint}' | top_k={top_k} | chunks_found={len(chunks)}")
+        # ← FIX: for summarize, return top 4 chunks directly (bypass TF-IDF)
+        if intent == "summarize":
+            chunks = [
+                {
+                    "text":        c["text"][:500],
+                    "filename":    c["filename"],
+                    "source_type": c["source_type"],
+                    "score":       1.0,
+                    "meta":        c.get("meta", {}),
+                }
+                for c in embedder._chunks[:4]
+            ]
+        else:
+            import re as _re
+            entities = _re.findall(r'\b[A-Z][a-zA-Z]+\b', request.question)
+            for entity in entities:
+                if entity not in search_hint and entity not in ("Give", "What", "How", "Why", "Tell", "Show"):
+                    search_hint = f"{entity} {search_hint}"
+                    break
+            top_k  = rag_intent["top_k"]
+            chunks = vector_store.search(search_hint, top_k=top_k)
+
+        print(f"[RAG] intent={intent} | search_hint='{search_hint}' | top_k={rag_intent['top_k']} | chunks_found={len(chunks)}")
 
         seen, unique_chunks = set(), []
         for c in chunks:
@@ -341,7 +370,7 @@ async def ask_question(request: QuestionRequest):
             if key not in seen:
                 seen.add(key)
                 unique_chunks.append(c)
-        chunks = unique_chunks
+        chunks = unique_chunks[:4]
         if chunks:
             chunks[0]["intent"] = intent
 
@@ -399,28 +428,74 @@ async def ask_question(request: QuestionRequest):
             )
 
     import re as _re
-    _id_match      = _re.search(r'\b(\d{3,6})\b', request.question)
-    _extracted_id  = _id_match.group(1) if _id_match else None
+    # Only extract ID if question contains ID-related keywords
+    _id_keywords = ["id", "number", "no", "mrn", "stu", "emp", "roll", "reg"]
+    _q_lower = request.question.lower()
+    _has_id_context = any(kw in _q_lower for kw in _id_keywords)
+
+    if _has_id_context:
+        _id_match = _re.search(
+            r'\b([A-Z]{1,6}[-_]?\d{3,8}|\d{3,8})\b',
+            request.question
+        )
+        _extracted_id = _id_match.group(1) if _id_match else None
+    else:
+        _extracted_id = None
 
     structured_query = await llm_service.get_structured_query(
         request.question, model_name=request.model,
         conversation_history=conversation_history
     )
 
+    # ← ADD THIS: remove invalid select_columns that don't exist in actual DataFrame
+    try:
+        df = settings.get_dataframe()
+        actual_cols = df.columns.tolist()
+
+        # Fix select_columns — remove any column not in actual DataFrame
+        if structured_query.get("select_columns"):
+            valid_cols = [c for c in structured_query["select_columns"] if c in actual_cols]
+            structured_query["select_columns"] = valid_cols if len(valid_cols) >= 5 else None
+
+        # Fix filters — remove any filter with invalid column
+        if structured_query.get("filters"):
+            structured_query["filters"] = [
+                f for f in structured_query["filters"]
+                if (f.get("column") or f.get("field")) in actual_cols
+            ]
+
+        # Fix sort_by — clear if column doesn't exist
+        if structured_query.get("sort_by"):
+            sort_col = structured_query["sort_by"].get("column")
+            if sort_col and sort_col not in actual_cols:
+                structured_query["sort_by"] = None
+
+    except Exception:
+        pass
+
     if _extracted_id:
         if structured_query.get("filters") is None:
             structured_query["filters"] = []
         if isinstance(structured_query["filters"], list):
             filters = structured_query["filters"]
+            try:
+                df = settings.get_dataframe()
+                id_col = next(
+                    (c for c in df.columns if "id" in c.lower()),
+                    "Student_ID"
+                )
+            except Exception:
+                id_col = "Student_ID"
             has_id_filter = any(
-                f.get("column") == "Student_ID" or f.get("field") == "Student_ID"
+                f.get("column") == id_col or f.get("field") == id_col
                 for f in filters
             )
             if not has_id_filter:
+                val = int(_extracted_id) if _extracted_id.isdigit() else _extracted_id
                 filters.append({
-                    "column": "Student_ID",
+                    "column": id_col,
                     "operator": "==",
-                    "value": int(_extracted_id)
+                    "value": val
                 })
     if structured_query.get("query_type") == "error":
         return QuestionResponse(
@@ -448,6 +523,7 @@ async def ask_question(request: QuestionRequest):
     print(f"[routes] result: {result}, type: {type(result).__name__}")  # ← ADD
 
     natural_response = _try_direct_answer(structured_query, result)
+    print(f"[routes] _try_direct_answer returned: {natural_response}")
     if natural_response is None:
         natural_response = await llm_service.generate_natural_response(
             request.question, result, model_name=request.model
