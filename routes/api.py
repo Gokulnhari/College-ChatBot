@@ -32,6 +32,9 @@ from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 
 
+# Simple in-memory cache for last fetched record (follow-up support)
+_session_cache: Dict[str, Any] = {"last_record": None, "last_filters": None}
+
 class EmailPreviewRequest(BaseModel):
     question: str
     model: Optional[str] = None
@@ -147,6 +150,7 @@ async def upload_file(file: UploadFile = File(...)):
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Excel load error: {str(e)}")
+        
 
     # ── PDF/XML → RAG pipeline ─────────────────────────────────────────────
     try:
@@ -521,6 +525,36 @@ async def ask_question(request: QuestionRequest):
     print(f"[routes] structured_query: {structured_query}")  # ← ADD
     result = query_executor.execute(structured_query)
     print(f"[routes] result: {result}, type: {type(result).__name__}")  # ← ADD
+
+    # Cache single record results for follow-up questions
+    if isinstance(result, list) and len(result) == 1:
+        _session_cache["last_record"]  = result[0]
+        _session_cache["last_filters"] = structured_query.get("filters", [])
+
+    # Detect follow-up reference to previous record
+    followup_phrases = [
+        "fetched earlier", "that student", "same student", "same person",
+        "their ", "his ", "her ", "the same", "previously", "just fetched",
+        "you showed", "that record", "the one i asked"
+    ]
+    if any(phrase in request.question.lower() for phrase in followup_phrases):
+        if _session_cache.get("last_record"):
+            record  = _session_cache["last_record"]
+            q_lower = request.question.lower()
+            for col, val in record.items():
+                col_lower = col.lower().replace("_", " ")
+                if col_lower in q_lower or col.lower() in q_lower:
+                    return QuestionResponse(
+                        response=f"The {col.replace('_', ' ')} is **{val}**.",
+                        structured_query=None, raw_result=record, mode="csv",
+                    )
+            # No specific field — return full cached record
+            lines = "\n".join(f"- **{k.replace('_', ' ')}**: {v}"
+                              for k, v in record.items())
+            return QuestionResponse(
+                response=f"Here are the details from the previous query:\n{lines}",
+                structured_query=None, raw_result=record, mode="csv",
+            )
 
     natural_response = _try_direct_answer(structured_query, result)
     print(f"[routes] _try_direct_answer returned: {natural_response}")

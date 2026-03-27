@@ -189,51 +189,57 @@ class LLMService:
 
             print(f"[bypass_check] type={type(result).__name__} value={result}")  # ← ADD THIS
 
-        # ── Aggregate bypass — skip LLM for single number results ─────────────
+# ── Aggregate bypass — skip LLM for single number results ─────────────
         numeric_val = None
-
-        
-
-        # Handle plain number (from _format_result single-cell return)
-        if isinstance(result, (int, float)):
-            numeric_val = result
-        elif hasattr(result, 'item'):  # numpy scalar (np.float64, np.int64)
-            numeric_val = result.item()
-
-        # Handle list of dicts
-        elif isinstance(result, list) and len(result) == 1:
-            row = result[0]
-            if isinstance(row, dict)  and len(row) == 1: 
-                for v in row.values():
-                    if isinstance(v, (int, float)) or hasattr(v, 'item'):
-                        numeric_val = v.item() if hasattr(v, 'item') else v
-                        break
+        try:
+            import numpy as np
+            if type(result) in (int, float):
+                numeric_val = float(result)
+            elif isinstance(result, (np.integer, np.floating)):
+                numeric_val = float(result)
+            elif isinstance(result, list) and len(result) == 1:
+                row = result[0]
+                if isinstance(row, dict):
+                    for v in row.values():
+                        if type(v) in (int, float) or isinstance(v, (np.integer, np.floating)):
+                            numeric_val = float(v)
+                            break
+        except Exception:
+            pass
 
         if numeric_val is not None:
             q = question.lower()
             if any(kw in q for kw in ["count", "how many", "total", "number of"]):
-                return f"There are {int(numeric_val)} students in the database."
+                return f"There are {int(numeric_val)} records in the database."
             elif any(kw in q for kw in ["average", "mean"]):
-                return f"The average is {round(float(numeric_val), 2)}."
+                return f"The average is {round(numeric_val, 2)}."
             elif any(kw in q for kw in ["highest", "maximum", "max"]):
                 return f"The highest value is {numeric_val}."
             elif any(kw in q for kw in ["lowest", "minimum", "min"]):
                 return f"The lowest value is {numeric_val}."
             else:
                 return f"The result is {numeric_val}."
-            
+        # ─────────────────────────────────────────────────────────────────────
 
             
       
         # ─────────────────────────────────────────────────────────────────────
 
+        # ── Single record field extraction — skip LLM for specific field queries
         if isinstance(result, list) and len(result) == 1:
-            row = result[0]
-            if isinstance(row, dict) and len(row) > 1:
-                parts = [f"**{k.replace('_', ' ')}:** {v}"
-                         for k, v in row.items()
-                         if v not in (None, "", "nan")]
-                return "\n".join(parts)
+            record = result[0]
+            if isinstance(record, dict):
+                q_lower = question.lower()
+                # Try to find which specific field is being asked about
+                for col, val in record.items():
+                    col_lower = col.lower().replace("_", " ")
+                    if col_lower in q_lower or col.lower() in q_lower:
+                        return f"The {col.replace('_', ' ')} is **{val}**."
+                # No specific field matched — return formatted full record
+                lines = "\n".join(f"- **{k.replace('_', ' ')}**: {v}"
+                                  for k, v in record.items())
+                return f"Here are the details:\n{lines}"
+        # ─────────────────────────────────────────────────────────────────────
 
         domain = settings.get_domain()   # ← existing line, nothing changes below
         prompt = get_response_generator_prompt(domain, question, formatted_result)

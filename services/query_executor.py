@@ -28,7 +28,16 @@ class QueryExecutor:
                 print("Filtered DataFrame is empty. Returning None.")
                 return None
 
-            query_type = structured_query.get("query_type", "aggregate")
+            # Default to "list" for filter queries, "aggregate" for others
+            query_type = structured_query.get("query_type")
+            if not query_type:
+                # Infer from query structure
+                if structured_query.get("filters"):
+                    query_type = "list"
+                elif structured_query.get("aggregations"):
+                    query_type = "aggregate"
+                else:
+                    query_type = "list"
 
             if query_type in ("list", "filter", "sort"):
                 return self._execute_list_query(filtered_df, structured_query)

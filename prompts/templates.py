@@ -72,7 +72,7 @@ Return ONLY valid JSON in this format:
 
 CRITICAL RULES:
 
-1. query_type:
+1. query_type
    - "list"      → user wants to SEE records ("show", "list", "who", "which")
    - "aggregate" → user wants statistics ("how many", "count", "total", "average")
    - "clarification" → query is ambiguous, need more info
