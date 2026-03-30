@@ -61,34 +61,15 @@ def chunk_extracted(
     final_chunks: List[Dict] = []
     chunk_counter = 0
 
-    # For PDFs: merge every 2 consecutive pages into one chunk before splitting
+    # ✅ REPLACE the entire "For PDFs" block with this:
     if pdf_pages:
-        merged = []
-        i = 0
-        while i < len(pdf_pages):
-            # Merge current page with next page if available
-            combined_text = pdf_pages[i].get("text", "").strip()
-            page_start    = pdf_pages[i].get("page", i + 1)
-
-            if i + 1 < len(pdf_pages):
-                combined_text += "\n\n" + pdf_pages[i + 1].get("text", "").strip()
-                i += 2
-            else:
-                i += 1
-
-            merged.append({
-                "text":        combined_text,
-                "source_type": "pdf",
-                "page":        page_start,
-            })
-
-        # Now chunk the merged pages
-        for raw in merged:
+        for raw in pdf_pages:
             text = raw.get("text", "").strip()
             if not text:
                 continue
 
-            meta = {"page": raw.get("page", 1)}
+            page_num = raw.get("page", 1)   # ← each page keeps its own number
+            meta = {"page": page_num}
 
             if len(text) <= chunk_size:
                 sub_chunks = [text]
@@ -98,11 +79,11 @@ def chunk_extracted(
             for i, sub in enumerate(sub_chunks):
                 chunk_id = f"{filename}::chunk_{chunk_counter}"
                 final_chunks.append({
-                    "chunk_id":   chunk_id,
-                    "text":       sub,
-                    "filename":   filename,
+                    "chunk_id":    chunk_id,
+                    "text":        sub,
+                    "filename":    filename,
                     "source_type": "pdf",
-                    "meta":       {**meta, "sub_index": i},
+                    "meta":        {**meta, "sub_index": i},
                 })
                 chunk_counter += 1
 

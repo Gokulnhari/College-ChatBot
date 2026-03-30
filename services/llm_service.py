@@ -33,12 +33,26 @@ class LLMService:
     async def classify_question(self, question: str, model_name: str = None, conversation_history: List[Dict] = None) -> str:
         question_lower = question.lower().strip()
 
-        # HEURISTIC 3: Obvious database keywords → always database
-        # Bypasses LLM entirely for clear data queries
+        # EMAIL GUARD — must check BEFORE database keywords
+        # Prevents "send email to student" from matching "student" keyword
+        email_phrases = [
+            "send email", "send an email", "send the email",
+            "email to", "mail to", "send mail", "notify via email",
+            "inform via email", "write email", "draft email",
+        ]
+        if any(phrase in question_lower for phrase in email_phrases):
+            print(f"[classify] Email intent detected: '{question}' → general (let agent handle)")
+            return "general"
+
+        # HEURISTIC: Obvious database keywords → always database
         database_keywords = [
             "count", "total", "how many", "average", "marks", "attendance",
             "score", "grade", "fee", "student", "class", "section", "rank",
-            "top", "bottom", "highest", "lowest", "pass", "fail", "list"
+            "top", "bottom", "highest", "lowest", "pass", "fail", "list",
+            "department", "fetch", "details", "show", "give", "what is the",
+            "whats the", "who is", "find", "search", "get", "cgpa", "gpa",
+            "phone", "city", "dob", "date of birth", "id", "mrn",
+            "email address", "email id", "parent email",
         ]
         if any(kw in question_lower for kw in database_keywords):
             print(f"[classify] Keyword match: '{question}' → database")
@@ -199,7 +213,7 @@ class LLMService:
                 numeric_val = float(result)
             elif isinstance(result, list) and len(result) == 1:
                 row = result[0]
-                if isinstance(row, dict):
+                if isinstance(row, dict) and len(row) == 1:  # ← only single-key dicts
                     for v in row.values():
                         if type(v) in (int, float) or isinstance(v, (np.integer, np.floating)):
                             numeric_val = float(v)
@@ -225,20 +239,34 @@ class LLMService:
       
         # ─────────────────────────────────────────────────────────────────────
 
-        # ── Single record field extraction — skip LLM for specific field queries
+        # ── Single record detail response — skip LLM ──────────────────────────
         if isinstance(result, list) and len(result) == 1:
             record = result[0]
-            if isinstance(record, dict):
+            if isinstance(record, dict) and len(record) > 1:
                 q_lower = question.lower()
-                # Try to find which specific field is being asked about
-                for col, val in record.items():
-                    col_lower = col.lower().replace("_", " ")
-                    if col_lower in q_lower or col.lower() in q_lower:
-                        return f"The {col.replace('_', ' ')} is **{val}**."
-                # No specific field matched — return formatted full record
-                lines = "\n".join(f"- **{k.replace('_', ' ')}**: {v}"
-                                  for k, v in record.items())
-                return f"Here are the details:\n{lines}"
+
+                # Check if user asked for a SPECIFIC field
+                specific_field_keywords = [
+                    "what is", "what's", "tell me the", "show me the",
+                    "give me the", "only", "just the"
+                ]
+                asking_specific = any(kw in q_lower for kw in specific_field_keywords)
+
+                if asking_specific:
+                    # Try to match a specific column
+                    for col, val in record.items():
+                        col_lower = col.lower().replace("_", " ")
+                        if col_lower in q_lower:
+                            return f"The {col.replace('_', ' ')} is **{val}**."
+
+                # Default — return ALL fields formatted
+                parts = [
+                    f"**{k.replace('_', ' ')}:** {v}"
+                    for k, v in record.items()
+                    if v not in (None, "", "nan")
+                ]
+                return "\n".join(parts)
+            
         # ─────────────────────────────────────────────────────────────────────
 
         domain = settings.get_domain()   # ← existing line, nothing changes below
@@ -278,15 +306,11 @@ class LLMService:
                 except Exception:
                     pass
 
-            sentences = re.split(r'(?<=[.!?])\s+', response_text.strip())
-            if len(sentences) > 2:
-                response_text = " ".join(sentences[:2])
-
-            if len(response_text) > 200:
-                truncated  = response_text[:200]
-                last_space = truncated.rfind(' ')
-                response_text = truncated[:last_space] + "."
-
+            if isinstance(result, list) and len(result) <= 1:
+                sentences = re.split(r'(?<=[.!?])\s+', response_text.strip())
+                if len(sentences) > 2:
+                    response_text = " ".join(sentences[:2])
+                    
             return response_text
 
         except httpx.ConnectError:
@@ -359,7 +383,7 @@ Intents:
 Return ONLY this JSON:
 {{"intent": "lookup", "retrieval_hint": "3-5 keywords to search", "top_k": 5}}
 
-top_k rules: summarize=15, compare=10, list=6, explain=6, lookup=3, general=5
+top_k rules: summarize=15, compare=10, list=8, explain=8, lookup=8, general=8
 
 Question: {question}
 <|end|>
@@ -410,13 +434,16 @@ Question: {question}
 
         intent_prompts = {
             "summarize": f"""<|system|>
-You are a strict document summarizer. Use ONLY the context below. Do NOT add outside knowledge.
-Write a structured summary covering each major topic found in the context. Keep the summary under 200 words.
+You are a document summarizer. Use ONLY the exact text from the context below.
+Do NOT add any information not present in the context.
+Do NOT use outside knowledge.
+Copy key points directly, then combine into a summary.
+Keep under 150 words.
 <|end|>
 <|user|>
 CONTEXT:
 {context}
-TASK: Summarize all major topics found in this document.
+TASK: Summarize the key points from this document only.
 <|end|>
 <|assistant|>""",
             "compare": f"""<|system|>
@@ -453,25 +480,35 @@ QUESTION: {question}
 <|end|>
 <|assistant|>""",
             "lookup": f"""<|system|>
-You are a strict fact extractor. Extract the answer ONLY from the context below.
-Do NOT add outside knowledge. Quote or closely paraphrase the relevant part.
-If not found say: "This information is not found in the uploaded document."
+You are a strict fact extractor. 
+RULES:
+- Copy the answer WORD FOR WORD from the context below
+- Do NOT explain, interpret, or add any information not in the context
+- Do NOT use outside knowledge about AI models or technology
+- Answer in 3-5 lines maximum
+- If not found say: "This information is not found in the uploaded document."
 <|end|>
 <|user|>
 CONTEXT:
 {context}
+
 QUESTION: {question}
+
+Copy the relevant section from the context exactly:
 <|end|>
 <|assistant|>""",
             "general": f"""<|system|>
-You are a strict document assistant. Answer using ONLY the context below.
-Do NOT add outside knowledge. Do NOT guess or infer beyond what is written.
-If not found say: "This information is not found in the uploaded document."
+You are a document assistant. Answer in plain English sentences only.
+Do NOT use code, JSON, or programming syntax.
+Do NOT invent page numbers or information not in the context.
+Use ONLY the context below. If not found say: "This information is not found in the uploaded document."
 <|end|>
 <|user|>
 CONTEXT:
 {context}
 QUESTION: {question}
+
+Answer in plain English only:
 <|end|>
 <|assistant|>""",
         }

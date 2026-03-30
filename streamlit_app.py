@@ -1,9 +1,7 @@
 """
 Streamlit frontend for the College AI Chatbot.
-FIXES:
-  - Sidebar CSS restored so toggle button works
-  - Bottom uploader fixed (resets upload_done when new file selected)
-  - Email preview renders immediately after agent response
+UNIFIED UPLOAD: Single bottom uploader handles all file types.
+Sidebar shows status and remove buttons only.
 """
 import requests
 import streamlit as st
@@ -110,47 +108,61 @@ div[data-testid="stButton"] button:hover {
 
 
 # ── session state ──────────────────────────────────────────────────────────────
-if "messages"      not in st.session_state: st.session_state.messages = []
-if "model_option"  not in st.session_state: st.session_state.model_option = "qwen2.5:1.5b"
-if "pending_email" not in st.session_state: st.session_state.pending_email = None
-if "last_uploaded" not in st.session_state: st.session_state.last_uploaded = None
-if "upload_done"   not in st.session_state: st.session_state.upload_done = False
+if "messages"           not in st.session_state: st.session_state.messages = []
+if "model_option"       not in st.session_state: st.session_state.model_option = "qwen2.5:1.5b"
+if "pending_email"      not in st.session_state: st.session_state.pending_email = None
+if "last_uploaded"      not in st.session_state: st.session_state.last_uploaded = None
+if "upload_done"        not in st.session_state: st.session_state.upload_done = False
 if "last_uploaded_name" not in st.session_state: st.session_state.last_uploaded_name = None
 if "last_uploaded_type" not in st.session_state: st.session_state.last_uploaded_type = None
-if "current_chat_id" not in st.session_state:
-    st.session_state.current_chat_id = new_chat_id()
+if "current_chat_id"    not in st.session_state: st.session_state.current_chat_id = new_chat_id()
+
+
+# ── fetch status once (used in sidebar) ───────────────────────────────────────
+try:
+    status_resp   = requests.get(STATUS_URL, timeout=5)
+    status        = status_resp.json() if status_resp.ok else {}
+except Exception:
+    status = {}
+
+mode          = status.get("mode", "csv")
+indexed_files = status.get("indexed_files", [])
+total_chunks  = status.get("total_chunks", 0)
+
 
 # ── sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    # ── Chat History ───────────────────────────────────────────────
+
+    # ── New Chat ───────────────────────────────────────────────────
     if st.button("➕ New Chat", use_container_width=True):
-        st.session_state.messages = []
+        st.session_state.messages      = []
         st.session_state.pending_email = None
         st.session_state.current_chat_id = new_chat_id()
         st.rerun()
 
+    # ── Chat History ───────────────────────────────────────────────
     st.subheader("🕘 Recent chats")
     for chat in list_chats():
         col_a, col_b = st.columns([5, 1])
-        label = chat["title"][:28] + ("…" if len(chat["title"]) > 28 else "")
+        label  = chat["title"][:28] + ("…" if len(chat["title"]) > 28 else "")
         active = chat["id"] == st.session_state.current_chat_id
         if col_a.button(("▶ " if active else "") + label,
                         key=f"ch_{chat['id']}", use_container_width=True):
             msgs, _ = load_chat(chat["id"])
-            st.session_state.messages = msgs
+            st.session_state.messages        = msgs
             st.session_state.current_chat_id = chat["id"]
-            st.session_state.pending_email = None
+            st.session_state.pending_email   = None
             st.rerun()
         if col_b.button("🗑", key=f"del_{chat['id']}"):
             delete_chat(chat["id"])
             if chat["id"] == st.session_state.current_chat_id:
-                st.session_state.messages = []
+                st.session_state.messages        = []
                 st.session_state.current_chat_id = new_chat_id()
             st.rerun()
 
     st.divider()
-    # ── Domain Selection (your existing code continues below) ──────
-    
+
+    # ── Domain Selection ───────────────────────────────────────────
     st.header("🎯 Domain Selection")
     try:
         domain_resp = requests.get(f"{API_BASE}/domain-info", timeout=3)
@@ -181,79 +193,49 @@ with st.sidebar:
         pass
 
     st.divider()
-    st.header("📁 Document Index")
 
-    try:
-        status_resp = requests.get(STATUS_URL, timeout=5)
-        status      = status_resp.json() if status_resp.ok else {}
-    except Exception:
-        status = {}
-
-    mode          = status.get("mode", "csv")
-    indexed_files = status.get("indexed_files", [])
-    total_chunks  = status.get("total_chunks", 0)
+    # ── Document Index & Uploaded Files ───────────────────────────
+    st.header("📁 Uploaded Files")
 
     if mode == "rag":
         st.markdown('<span class="badge-rag">🟢 RAG Mode — documents active</span>',
                     unsafe_allow_html=True)
     else:
-        st.markdown('<span class="badge-csv">🔵 CSV Mode — using school database</span>',
+        st.markdown('<span class="badge-csv">🔵 CSV Mode — using database</span>',
                     unsafe_allow_html=True)
 
-    st.caption(f"{total_chunks} chunks indexed across {len(indexed_files)} file(s)")
+    st.caption(
+        "📄 **PDF, XML** → RAG mode (document reading)\n\n"
+        "📊 **Excel, CSV** → CSV mode (database queries)\n\n"
+        "Upload using the 📎 box below the chat."
+    )
 
+    # ── Show active CSV/Excel ──────────────────────────────────────
     try:
         active_resp = requests.get(f"{API_BASE}/active-csv", timeout=3)
         if active_resp.ok:
             active = active_resp.json()
             if active.get("uploaded"):
-                st.info(f"📊 Active CSV: {active['filename']}\n\n"
+                fname = active["filename"]
+                ext   = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+                icon  = "📊" if ext in ("csv", "xlsx", "xls") else "📄"
+                st.info(f"{icon} **{fname}**\n\n"
                         f"{active['rows']} rows | {active['columns']} columns")
+                if st.button("🗑️ Remove", key="remove_active_csv", use_container_width=True):
+                    try:
+                        requests.post(REMOVE_URL, json={"filename": fname}, timeout=5)
+                        st.session_state.last_uploaded      = None
+                        st.session_state.last_uploaded_name = None
+                        st.session_state.upload_done        = False
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
     except Exception:
         pass
 
-    st.subheader("⚙️ Query Mode")
-    manual_mode = st.radio(
-        "Select mode:",
-        ["Auto-detect", "CSV only (student database)", "RAG only (uploaded documents)"],
-        index=0,
-    )
-    st.session_state["manual_mode"] = manual_mode
-    st.divider()
-
-    st.subheader("📤 Upload a file")
-    st.caption(
-    "📄 **PDF, XML** → RAG mode (document reading)\n\n"
-    "📊 **Excel, CSV** → CSV mode (database queries)"
-    )
-    sidebar_file = st.file_uploader(
-        "PDF, Excel, XML, CSV (max 200MB)",
-        type=["pdf", "xlsx", "xls", "xml", "csv"],
-        key="sidebar_uploader",
-    )
-    if sidebar_file and st.button("📥 Index File", use_container_width=True):
-        with st.spinner(f"Indexing {sidebar_file.name}…"):
-            try:
-                resp = requests.post(
-                    UPLOAD_URL,
-                    files={"file": (sidebar_file.name,
-                                    sidebar_file.getvalue(),
-                                    sidebar_file.type)},
-                    timeout=300,
-                )
-                if resp.ok:
-                    data = resp.json()
-                    st.success(f"✅ **{data['filename']}** — {data['chunks_added']} chunks added")
-                    if data.get("warning"):
-                        st.warning(data["warning"])
-                    st.rerun()
-                else:
-                    st.error(f"Upload failed: {resp.text}")
-            except Exception as e:
-                st.error(str(e))
-
+    # ── Show indexed RAG files ─────────────────────────────────────
     if indexed_files:
-        st.subheader("Indexed files")
+        st.caption(f"{total_chunks} chunks indexed across {len(indexed_files)} file(s)")
         for fname in indexed_files:
             c1, c2 = st.columns([3, 1])
             c1.markdown(f"📄 `{fname}`")
@@ -263,16 +245,28 @@ with st.sidebar:
                         r = requests.post(REMOVE_URL, json={"filename": fname}, timeout=10)
                         if r.ok:
                             st.session_state.pending_email = None
-                            st.success(f"Removed {fname}")
                             st.rerun()
                         else:
                             st.error(r.text)
                     except Exception as e:
                         st.error(str(e))
-    else:
-        st.info("No files indexed yet.\nUpload above to start.")
+    elif not (active_resp.ok and active_resp.json().get("uploaded") if 'active_resp' in dir() else False):
+        st.info("No files uploaded yet.\nUse the 📎 box below the chat to upload.")
 
     st.divider()
+
+    # ── Query Mode ─────────────────────────────────────────────────
+    st.subheader("⚙️ Query Mode")
+    manual_mode = st.radio(
+        "Select mode:",
+        ["Auto-detect", "CSV only (student database)", "RAG only (uploaded documents)"],
+        index=0,
+    )
+    st.session_state["manual_mode"] = manual_mode
+
+    st.divider()
+
+    # ── Email Agent ────────────────────────────────────────────────
     st.header("📧 Email Agent")
     st.caption(
         "Send emails to students/parents from chat.\n\n"
@@ -285,9 +279,6 @@ with st.sidebar:
         help="Turn ON to simulate without sending real emails.",
     )
     st.session_state["dry_run"] = dry_run_mode
-    st.divider()
-    st.caption("Files indexed here switch the chatbot to RAG mode.\n"
-               "Remove all files to return to CSV mode.")
 
 
 # ── email preview modal ────────────────────────────────────────────────────────
@@ -408,10 +399,11 @@ if st.session_state.pending_email:
 
 
 # ── bottom toolbar ─────────────────────────────────────────────────────────────
-models      = ["qwen2.5:1.5b", "phi3:3.8b-mini-4k-instruct-q4_0"]
+models     = ["qwen2.5:1.5b", "phi3:3.8b-mini-4k-instruct-q4_0"]
 current_mdl = st.session_state.get("model_option", "qwen2.5:1.5b")
 safe_index  = models.index(current_mdl) if current_mdl in models else 0
 
+# ── UNIFIED uploader (bottom only) ────────────────────────────────────────────
 bottom_file = st.file_uploader(
     "Upload file",
     type=["pdf", "xlsx", "xls", "xml", "csv"],
@@ -419,17 +411,14 @@ bottom_file = st.file_uploader(
     key="bottom_uploader",
 )
 
-if "last_uploaded_name" not in st.session_state: st.session_state.last_uploaded_name = None
-
 if bottom_file is not None:
     file_id = f"{bottom_file.name}_{bottom_file.size}"
     if file_id != st.session_state.last_uploaded:
         st.session_state.last_uploaded      = file_id
         st.session_state.last_uploaded_name = bottom_file.name
         st.session_state.upload_done        = False
-
 else:
-    # ── File was removed from uploader (user clicked ✕) ──────────────
+    # File removed from uploader (user clicked ✕)
     if st.session_state.last_uploaded is not None:
         fname = st.session_state.get("last_uploaded_name", "uploaded_file.csv")
         try:
@@ -440,10 +429,9 @@ else:
         st.session_state.last_uploaded_name = None
         st.session_state.upload_done        = False
         st.rerun()
-    # ─────────────────────────────────────────────────────────────────
 
 if bottom_file is not None and not st.session_state.upload_done:
-    with st.spinner(f"Indexing {bottom_file.name}…"):
+    with st.spinner(f"Uploading {bottom_file.name}…"):
         try:
             resp = requests.post(
                 UPLOAD_URL,
@@ -453,9 +441,18 @@ if bottom_file is not None and not st.session_state.upload_done:
                 timeout=300,
             )
             if resp.ok:
-                data = resp.json()
+                data        = resp.json()
+                source_type = data.get("source_type", "")
                 st.session_state.upload_done = True
-                st.success(f"✅ **{data['filename']}** — {data['chunks_added']} chunks indexed")
+                if source_type in ("csv", "excel"):
+                    st.success(
+                        f"✅ **{data['filename']}** — loaded as database "
+                        f"({data['chunks_added']} rows)"
+                    )
+                else:
+                    st.success(
+                        f"✅ **{data['filename']}** — {data['chunks_added']} chunks indexed"
+                    )
                 if data.get("warning"):
                     st.info(data["warning"])
                 st.rerun()
@@ -466,6 +463,7 @@ if bottom_file is not None and not st.session_state.upload_done:
             st.session_state.upload_done = True
             st.error(str(e))
 
+# ── model selector + new chat ──────────────────────────────────────────────────
 col_model, col_newchat = st.columns([3, 1])
 with col_model:
     st.session_state.model_option = st.selectbox(
@@ -476,6 +474,7 @@ with col_newchat:
     if st.button("New Chat", use_container_width=True, key="new_chat_bottom"):
         st.session_state.messages      = []
         st.session_state.pending_email = None
+        # Clear all indexed files on new chat
         try:
             sr = requests.get(STATUS_URL, timeout=3)
             if sr.ok:
@@ -483,8 +482,21 @@ with col_newchat:
                     requests.post(REMOVE_URL, json={"filename": fname}, timeout=10)
         except Exception:
             pass
+        # Clear uploaded CSV/Excel
+        if st.session_state.get("last_uploaded_name"):
+            try:
+                requests.post(
+                    REMOVE_URL,
+                    json={"filename": st.session_state.last_uploaded_name},
+                    timeout=5,
+                )
+            except Exception:
+                pass
+        st.session_state.last_uploaded      = None
+        st.session_state.last_uploaded_name = None
+        st.session_state.upload_done        = False
         st.rerun()
-  
+
 
 # ── chat input ─────────────────────────────────────────────────────────────────
 if prompt := st.chat_input("Ask about your documents, the school dataset, or say 'send email to…'"):
@@ -532,7 +544,6 @@ if prompt := st.chat_input("Ask about your documents, the school dataset, or say
                                         timeout=120,
                                     )
                                     if pr.ok:
-                                        # ★ KEY FIX: save message first, then rerun to show preview
                                         st.session_state.messages.append({
                                             "role":    "assistant",
                                             "content": answer,
@@ -573,7 +584,6 @@ if prompt := st.chat_input("Ask about your documents, the school dataset, or say
                         msg["rag_sources"] = rag_sources
                     st.session_state.messages.append(msg)
 
-                    
                     save_chat(st.session_state.current_chat_id,
                               st.session_state.messages,
                               title=derive_title(st.session_state.messages))

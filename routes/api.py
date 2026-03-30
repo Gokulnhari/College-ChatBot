@@ -32,8 +32,9 @@ from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 
 
-# Simple in-memory cache for last fetched record (follow-up support)
-_session_cache: Dict[str, Any] = {"last_record": None, "last_filters": None}
+# In-memory cache for last fetched record (follow-up support)
+_session_cache: Dict[str, Any] = {"last_record": None, "last_filters": None, "last_options": None,}
+
 
 class EmailPreviewRequest(BaseModel):
     question: str
@@ -51,7 +52,15 @@ router = APIRouter()
 
 
 def extract_potential_full_name(question: str) -> str | None:
-    match = re.search(r"(?:who is|tell me about)\s+([A-Za-z\s]+?)\??$", question, re.IGNORECASE)
+    match = re.search(
+        r"(?:who is|tell me about|details of(?: the student)?|"
+        r"fetch(?: the)? details of(?: the student)?|"
+        r"show details of|get details of|find|search for)\s+"
+        r"([A-Za-z]+(?: [A-Za-z]+)+)",
+        question,
+        re.IGNORECASE
+    )
+    
     if match:
         return match.group(1).strip()
 
@@ -70,10 +79,10 @@ def extract_potential_full_name(question: str) -> str | None:
 
     return name_parts[0] if name_parts else None
 
+
 def _try_direct_answer(structured_query: dict, result: any) -> str | None:
     query_type = structured_query.get("query_type")
 
-    # Handle list of dicts (most common return from query_executor)
     if isinstance(result, list) and len(result) == 1:
         row = result[0]
         if isinstance(row, dict) and len(row) == 1:
@@ -89,15 +98,14 @@ def _try_direct_answer(structured_query: dict, result: any) -> str | None:
                     val = round(val, 2)
                 return f"The {label} is **{val}**."
 
-    # Handle DataFrame
     if isinstance(result, pd.DataFrame) and not result.empty:
         if query_type == "aggregate" and result.shape == (1, 1):
-            col   = result.columns[0]
-            value = result.iloc[0, 0]
-            fn    = structured_query.get("aggregation", {}).get("function", "")
-            label_map = {"count": "total", "sum": "total", "avg": "average",
-                         "mean": "average", "min": "minimum", "max": "maximum"}
-            label     = label_map.get(fn.lower(), fn)
+            col        = result.columns[0]
+            value      = result.iloc[0, 0]
+            fn         = structured_query.get("aggregation", {}).get("function", "")
+            label_map  = {"count": "total", "sum": "total", "avg": "average",
+                          "mean": "average", "min": "minimum", "max": "maximum"}
+            label      = label_map.get(fn.lower(), fn)
             pretty_col = col.replace("_", " ").lower()
             if isinstance(value, float) and value == int(value):
                 value = int(value)
@@ -106,6 +114,8 @@ def _try_direct_answer(structured_query: dict, result: any) -> str | None:
             return f"The {label} {pretty_col} is **{value}**."
 
     return None
+
+
 # ── /upload ────────────────────────────────────────────────────────────────────
 
 @router.post("/upload", response_model=UploadResponse)
@@ -122,17 +132,15 @@ async def upload_file(file: UploadFile = File(...)):
 
     file_bytes = await file.read()
 
-    # ── CSV and Excel → CSV pipeline (database mode) ───────────────────────
     if ext == ".csv":
         try:
             df = pd.read_csv(io.BytesIO(file_bytes))
             settings.set_uploaded_dataframe(df, filename=filename)
             query_executor.df = df
+            print(f"[upload] CSV loaded: {df.shape}, columns: {list(df.columns)}")
             return UploadResponse(
-                filename=filename,
-                source_type="csv",
-                chunks_added=len(df),
-                total_chunks=len(df),
+                filename=filename, source_type="csv",
+                chunks_added=len(df), total_chunks=len(df),
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"CSV load error: {str(e)}")
@@ -142,17 +150,14 @@ async def upload_file(file: UploadFile = File(...)):
             df = pd.read_excel(io.BytesIO(file_bytes))
             settings.set_uploaded_dataframe(df, filename=filename)
             query_executor.df = df
+            print(f"[upload] Excel loaded: {df.shape}, columns: {list(df.columns)}")
             return UploadResponse(
-                filename=filename,
-                source_type="excel",
-                chunks_added=len(df),
-                total_chunks=len(df),
+                filename=filename, source_type="excel",
+                chunks_added=len(df), total_chunks=len(df),
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Excel load error: {str(e)}")
-        
 
-    # ── PDF/XML → RAG pipeline ─────────────────────────────────────────────
     try:
         result = vector_store.add_file(filename, file_bytes)
     except ValueError as e:
@@ -177,38 +182,30 @@ async def get_status():
 @router.get("/health")
 async def health_check():
     health_data = {"status": "healthy", "issues": []}
-
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
             response = await client.get(settings.OLLAMA_URL.replace("/api/generate", "/api/tags"))
             response.raise_for_status()
             models = response.json().get("models", [])
-            available_models = [model["name"] for model in models] if models else []
-            health_data["ollama"] = {
-                "status": "healthy",
-                "url": settings.OLLAMA_URL,
-                "available_models": available_models
-            }
+            available_models = [m["name"] for m in models] if models else []
+            health_data["ollama"] = {"status": "healthy", "url": settings.OLLAMA_URL,
+                                     "available_models": available_models}
     except Exception as e:
         health_data["status"] = "degraded"
         health_data["issues"].append("Ollama service is not available")
-        health_data["ollama"] = {"status": f"unhealthy: {str(e)}", "url": settings.OLLAMA_URL, "available_models": []}
-
+        health_data["ollama"] = {"status": f"unhealthy: {str(e)}", "url": settings.OLLAMA_URL,
+                                 "available_models": []}
     try:
-        vector_store_status = vector_store.status()
-        health_data["vector_store"] = vector_store_status
+        health_data["vector_store"] = vector_store.status()
     except Exception as e:
         health_data["issues"].append(f"Vector store error: {str(e)}")
         health_data["vector_store"] = {"status": "error"}
-
     try:
         df = settings.get_dataframe()
-        csv_status = f"loaded ({len(df)} rows)" if df is not None else "not loaded"
-        health_data["csv_data"] = {"status": csv_status}
+        health_data["csv_data"] = {"status": f"loaded ({len(df)} rows)" if df is not None else "not loaded"}
     except Exception as e:
         health_data["issues"].append(f"CSV data error: {str(e)}")
         health_data["csv_data"] = {"status": "error"}
-
     return health_data
 
 
@@ -234,9 +231,7 @@ async def agent_email_preview(request: EmailPreviewRequest):
                  await parse_email_intent(request.question, request.model)
 
         print(f"[email_preview] intent filters: {intent.get('filters')}")
-        print(f"[email_preview] full intent: {intent}")
 
-        # ← ADD THIS: override LLM-hallucinated ID with regex-extracted one
         import re as _re
         _id_match = _re.search(r'\b(\d{3,6})\b', request.question)
         if _id_match:
@@ -246,8 +241,6 @@ async def agent_email_preview(request: EmailPreviewRequest):
                 col = f.get("column") or f.get("field")
                 if col == "Student_ID":
                     f["value"] = extracted_id
-                    print(f"[email_preview] overrode ID filter value → {extracted_id}")
-            # If no Student_ID filter exists, add one
             if not any((f.get("column") or f.get("field")) == "Student_ID" for f in filters):
                 filters.append({"column": "Student_ID", "operator": "==", "value": extracted_id})
                 intent["filters"] = filters
@@ -255,7 +248,6 @@ async def agent_email_preview(request: EmailPreviewRequest):
         df      = settings.get_dataframe()
         filters = intent.get("filters", [])
 
-        # Cast numeric filter values to match column dtypes
         for f in filters:
             col = f.get("column") or f.get("field")
             val = f.get("value")
@@ -266,15 +258,10 @@ async def agent_email_preview(request: EmailPreviewRequest):
                     pass
 
         matched_df = resolve_recipients(filters, df) if filters else df
-        # ... rest unchanged
 
         if matched_df.empty:
-            return {
-                "intent": intent,
-                "preview": None,
-                "warning": "No students matched the given filters.",
-                "recipients": [],
-            }
+            return {"intent": intent, "preview": None,
+                    "warning": "No students matched the given filters.", "recipients": []}
 
         target     = intent.get("target", "student")
         recipients = get_email_addresses(matched_df, target)
@@ -290,15 +277,14 @@ async def agent_email_preview(request: EmailPreviewRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Email preview error: {str(e)}")
 
+
 # ── /agent/email/send ──────────────────────────────────────────────────────────
 
 @router.post("/agent/email/send")
 async def agent_email_send(request: EmailSendRequest):
     try:
         result = send_emails(
-            intent=request.intent,
-            recipients=request.recipients,
-            dry_run=request.dry_run,
+            intent=request.intent, recipients=request.recipients, dry_run=request.dry_run,
         )
         return result
     except Exception as e:
@@ -315,6 +301,53 @@ async def ask_question(request: QuestionRequest):
 
     conversation_history = request.conversation_history or []
 
+    # ✅ NEW — resolve "option 1/2/3" BEFORE anything else
+    q_stripped = request.question.strip().lower()
+    option_match = re.match(r'^option\s*(\d+)$', q_stripped)
+    if option_match and _session_cache.get("last_options"):
+        option_idx = int(option_match.group(1)) - 1   # 0-indexed
+        options    = _session_cache["last_options"]
+
+        if 0 <= option_idx < len(options):
+            chosen = options[option_idx]
+            print(f"[routes] Option resolved: {chosen}")
+
+            # Build a direct filter query using the chosen record's ID
+            df     = settings.get_dataframe()
+            id_col = next((c for c in df.columns if "id" in c.lower()), None)
+            name_col = next((c for c in df.columns if "name" in c.lower()), None)
+
+            if id_col and id_col in chosen:
+                chosen_id = chosen[id_col]
+                # Fetch the full record directly — no LLM involved
+                matched = df[df[id_col] == chosen_id].to_dict(orient="records")
+                if matched:
+                    record = matched[0]
+                    _session_cache["last_record"]  = record
+                    _session_cache["last_options"] = None   # clear options
+                    parts = [
+                        f"**{k.replace('_', ' ')}:** {v}"
+                        for k, v in record.items()
+                        if v not in (None, "", "nan")
+                    ]
+                    return QuestionResponse(
+                        response="\n".join(parts),
+                        structured_query={"query_type": "filter",
+                                          "filters": [{
+                                              "column": id_col,
+                                              "operator": "==",
+                                              "value": chosen_id
+                                          }]},
+                        raw_result=record,
+                        mode="csv",
+                    )
+
+        # Invalid option number
+        return QuestionResponse(
+            response=f"Please choose a valid option (1 to {len(options)}).",
+            structured_query=None, raw_result=None, mode="csv",
+        )
+
     agent_intent = await detect_agent_intent(request.question, request.model)
     print(f"[ASK] Agent intent: {agent_intent}")
 
@@ -325,9 +358,9 @@ async def ask_question(request: QuestionRequest):
                 "📧 I can help you send that email! "
                 "Let me find the recipients and prepare a preview for you to review before sending."
             ),
-            structured_query={"agent": "email", "trigger": request.question, "parsed_intent": parsed_intent},
-            raw_result=None,
-            mode="agent",
+            structured_query={"agent": "email", "trigger": request.question,
+                               "parsed_intent": parsed_intent},
+            raw_result=None, mode="agent",
         )
 
     override = request.mode_override
@@ -344,29 +377,25 @@ async def ask_question(request: QuestionRequest):
         intent      = rag_intent["intent"]
         search_hint = rag_intent["retrieval_hint"]
 
-        # ← FIX: for summarize, return top 4 chunks directly (bypass TF-IDF)
         if intent == "summarize":
-            chunks = [
-                {
-                    "text":        c["text"][:500],
-                    "filename":    c["filename"],
-                    "source_type": c["source_type"],
-                    "score":       1.0,
-                    "meta":        c.get("meta", {}),
-                }
-                for c in embedder._chunks[:4]
+           chunks = [
+                {"text": c["text"], "filename": c["filename"],
+                "source_type": c["source_type"], "score": 1.0, "meta": c.get("meta", {})}
+                for c in embedder._chunks[:12]   # up from 4, no 500-char truncation
             ]
         else:
             import re as _re
             entities = _re.findall(r'\b[A-Z][a-zA-Z]+\b', request.question)
             for entity in entities:
-                if entity not in search_hint and entity not in ("Give", "What", "How", "Why", "Tell", "Show"):
+                if entity not in search_hint and entity not in (
+                        "Give", "What", "How", "Why", "Tell", "Show"):
                     search_hint = f"{entity} {search_hint}"
                     break
             top_k  = rag_intent["top_k"]
             chunks = vector_store.search(search_hint, top_k=top_k)
 
-        print(f"[RAG] intent={intent} | search_hint='{search_hint}' | top_k={rag_intent['top_k']} | chunks_found={len(chunks)}")
+        print(f"[RAG] intent={intent} | search_hint='{search_hint}' | "
+              f"top_k={rag_intent['top_k']} | chunks_found={len(chunks)}")
 
         seen, unique_chunks = set(), []
         for c in chunks:
@@ -400,16 +429,17 @@ async def ask_question(request: QuestionRequest):
             request.question, model_name=request.model,
             conversation_history=conversation_history,
         )
-        return QuestionResponse(response=chat_response, structured_query=None, raw_result=None, mode="csv")
+        return QuestionResponse(response=chat_response, structured_query=None,
+                                raw_result=None, mode="csv")
 
     potential_name = extract_potential_full_name(request.question)
 
-    # ── FIX 3: correct indentation for potential_name block ────────────────────
     if potential_name:
-        df = settings.get_dataframe()
+        df       = settings.get_dataframe()
         name_col = next((c for c in df.columns if "name" in c.lower()), None)
         if name_col:
-            matching_students = df[df[name_col].str.contains(potential_name, case=False, na=False)]
+            matching_students = df[df[name_col].str.contains(
+                potential_name, case=False, na=False)]
         else:
             matching_students = pd.DataFrame()
 
@@ -419,75 +449,118 @@ async def ask_question(request: QuestionRequest):
                 if c in df.columns:
                     cols.append(c)
             options = matching_students[cols].to_dict(orient="records")
+
+            _session_cache["last_options"] = matching_students.to_dict(orient="records")
+            
             natural_response = (
                 f"There are multiple students named '{potential_name}'. "
                 f"Which one are you referring to?\n\nOptions:\n"
             )
             for i, option in enumerate(options):
-                natural_response += f"{i+1}. " + ", ".join(f"{k}: {v}" for k, v in option.items()) + "\n"
+                natural_response += f"{i+1}. " + \
+                    ", ".join(f"{k}: {v}" for k, v in option.items()) + "\n"
             return QuestionResponse(
                 response=natural_response,
-                structured_query={"query_type": "clarification", "question": f"Which '{potential_name}'?", "options": options},
+                structured_query={"query_type": "clarification",
+                                  "question": f"Which '{potential_name}'?",
+                                  "options": options},
                 raw_result=None, mode="csv",
             )
 
     import re as _re
-    # Only extract ID if question contains ID-related keywords
+    _q_lower     = request.question.lower()
     _id_keywords = ["id", "number", "no", "mrn", "stu", "emp", "roll", "reg"]
-    _q_lower = request.question.lower()
     _has_id_context = any(kw in _q_lower for kw in _id_keywords)
 
     if _has_id_context:
-        _id_match = _re.search(
-            r'\b([A-Z]{1,6}[-_]?\d{3,8}|\d{3,8})\b',
-            request.question
-        )
+        _id_match     = _re.search(r'\b([A-Z]{1,6}[-_]?\d{3,12}|\d{3,12})\b', request.question)
         _extracted_id = _id_match.group(1) if _id_match else None
     else:
         _extracted_id = None
 
+    # ── Follow-up check (BEFORE structured query) — column-name based ─────────
+    # Works for any dataset — no hardcoded column names or phrases
+    if _session_cache.get("last_record"):
+        record  = _session_cache["last_record"]
+        q_lower = request.question.lower()
+
+        matched_col = None
+        matched_val = None
+        for col, val in record.items():
+            col_variations = [
+                col.lower(),
+                col.lower().replace("_", " "),
+                col.lower().replace("_", ""),
+            ]
+            if any(variation in q_lower for variation in col_variations):
+                matched_col = col
+                matched_val = val
+                break
+
+        # General follow-up phrases (no specific column mentioned)
+        general_followup = any(phrase in q_lower for phrase in [
+            "that student", "same student", "fetched earlier",
+            "previously", "just fetched", "the one", "that record",
+            "same person", "that person",
+        ])
+
+        if matched_col:
+            name_col = next((k for k in record if "name" in k.lower()), None)
+            name     = record.get(name_col, "the record") if name_col else "the record"
+            return QuestionResponse(
+                response=f"The {matched_col.replace('_', ' ')} of {name} is **{matched_val}**.",
+                structured_query=None, raw_result=record, mode="csv",
+            )
+        elif general_followup:
+            lines = "\n".join(f"- **{k.replace('_', ' ')}**: {v}"
+                              for k, v in record.items())
+            return QuestionResponse(
+                response=f"Here are the details:\n{lines}",
+                structured_query=None, raw_result=record, mode="csv",
+            )
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # ── Structured query (LLM) ────────────────────────────────────────────────
     structured_query = await llm_service.get_structured_query(
         request.question, model_name=request.model,
         conversation_history=conversation_history
     )
 
-    # ← ADD THIS: remove invalid select_columns that don't exist in actual DataFrame
+    # Sanitize columns against actual DataFrame
     try:
-        df = settings.get_dataframe()
-        actual_cols = df.columns.tolist()
+        df          = settings.get_dataframe()
+        actual_cols = list(df.columns) if df is not None else []
+        print(f"[query_planner] df shape: {df.shape if df is not None else 'None'}")
+        print(f"[query_planner] query_executor.df shape: "
+              f"{query_executor.df.shape if query_executor.df is not None else 'None'}")
 
-        # Fix select_columns — remove any column not in actual DataFrame
         if structured_query.get("select_columns"):
             valid_cols = [c for c in structured_query["select_columns"] if c in actual_cols]
             structured_query["select_columns"] = valid_cols if len(valid_cols) >= 5 else None
 
-        # Fix filters — remove any filter with invalid column
         if structured_query.get("filters"):
             structured_query["filters"] = [
                 f for f in structured_query["filters"]
                 if (f.get("column") or f.get("field")) in actual_cols
             ]
 
-        # Fix sort_by — clear if column doesn't exist
         if structured_query.get("sort_by"):
             sort_col = structured_query["sort_by"].get("column")
-            if sort_col and sort_col not in actual_cols:
+            if not sort_col or sort_col not in actual_cols:
                 structured_query["sort_by"] = None
 
     except Exception:
         pass
 
+    # Inject extracted ID if LLM missed it
     if _extracted_id:
         if structured_query.get("filters") is None:
             structured_query["filters"] = []
         if isinstance(structured_query["filters"], list):
             filters = structured_query["filters"]
             try:
-                df = settings.get_dataframe()
-                id_col = next(
-                    (c for c in df.columns if "id" in c.lower()),
-                    "Student_ID"
-                )
+                df     = settings.get_dataframe()
+                id_col = next((c for c in df.columns if "id" in c.lower()), "Student_ID")
             except Exception:
                 id_col = "Student_ID"
             has_id_filter = any(
@@ -496,11 +569,8 @@ async def ask_question(request: QuestionRequest):
             )
             if not has_id_filter:
                 val = int(_extracted_id) if _extracted_id.isdigit() else _extracted_id
-                filters.append({
-                    "column": id_col,
-                    "operator": "==",
-                    "value": val
-                })
+                filters.append({"column": id_col, "operator": "==", "value": val})
+
     if structured_query.get("query_type") == "error":
         return QuestionResponse(
             response=structured_query.get("error", "Sorry, I encountered an error."),
@@ -509,9 +579,8 @@ async def ask_question(request: QuestionRequest):
 
     if structured_query.get("query_type") == "clarification":
         clarification_question = structured_query.get("question", "Please clarify your request.")
-        options      = structured_query.get("options", [])
         options_list = []
-        for option in options:
+        for option in structured_query.get("options", []):
             if isinstance(option, dict):
                 options_list.append(f"- {', '.join([f'{k}: {v}' for k, v in option.items()])}")
             else:
@@ -521,40 +590,14 @@ async def ask_question(request: QuestionRequest):
             structured_query=structured_query, raw_result=None, mode="csv",
         )
 
- # CORRECT - indented inside ask_question
-    print(f"[routes] structured_query: {structured_query}")  # ← ADD
+    print(f"[routes] structured_query: {structured_query}")
     result = query_executor.execute(structured_query)
-    print(f"[routes] result: {result}, type: {type(result).__name__}")  # ← ADD
+    print(f"[routes] result: {result}, type: {type(result).__name__}")
 
-    # Cache single record results for follow-up questions
+    # Cache single record for follow-up questions
     if isinstance(result, list) and len(result) == 1:
         _session_cache["last_record"]  = result[0]
         _session_cache["last_filters"] = structured_query.get("filters", [])
-
-    # Detect follow-up reference to previous record
-    followup_phrases = [
-        "fetched earlier", "that student", "same student", "same person",
-        "their ", "his ", "her ", "the same", "previously", "just fetched",
-        "you showed", "that record", "the one i asked"
-    ]
-    if any(phrase in request.question.lower() for phrase in followup_phrases):
-        if _session_cache.get("last_record"):
-            record  = _session_cache["last_record"]
-            q_lower = request.question.lower()
-            for col, val in record.items():
-                col_lower = col.lower().replace("_", " ")
-                if col_lower in q_lower or col.lower() in q_lower:
-                    return QuestionResponse(
-                        response=f"The {col.replace('_', ' ')} is **{val}**.",
-                        structured_query=None, raw_result=record, mode="csv",
-                    )
-            # No specific field — return full cached record
-            lines = "\n".join(f"- **{k.replace('_', ' ')}**: {v}"
-                              for k, v in record.items())
-            return QuestionResponse(
-                response=f"Here are the details from the previous query:\n{lines}",
-                structured_query=None, raw_result=record, mode="csv",
-            )
 
     natural_response = _try_direct_answer(structured_query, result)
     print(f"[routes] _try_direct_answer returned: {natural_response}")
@@ -576,9 +619,9 @@ async def active_csv_status():
     from config import settings as s
     if s._uploaded_df is not None:
         df    = s._uploaded_df
-        # FIX 2: return real filename instead of hardcoded string
         fname = getattr(s, '_uploaded_filename', None) or 'uploaded_file.csv'
-        return {"uploaded": True, "filename": fname, "rows": len(df), "columns": len(df.columns)}
+        return {"uploaded": True, "filename": fname,
+                "rows": len(df), "columns": len(df.columns)}
     return {"uploaded": False}
 
 
@@ -587,14 +630,14 @@ async def get_domain_info():
     from config.domains import list_domains
     domain = settings.get_domain()
     return {
-        "current_domain":   settings.ACTIVE_DOMAIN,
+        "current_domain":    settings.ACTIVE_DOMAIN,
         "available_domains": list_domains(),
-        "entity_name":      domain.entity_name,
-        "entity_plural":    domain.entity_name_plural,
-        "description":      domain.description,
-        "csv_file":         domain.csv_file_path,
-        "field_count":      len(domain.fields),
-        "fields":           domain.field_names,
+        "entity_name":       domain.entity_name,
+        "entity_plural":     domain.entity_name_plural,
+        "description":       domain.description,
+        "csv_file":          domain.csv_file_path,
+        "field_count":       len(domain.fields),
+        "fields":            domain.field_names,
     }
 
 
@@ -606,12 +649,16 @@ async def set_domain(request: dict):
     try:
         from config.domains import list_domains
         if domain_name not in list_domains():
-            raise HTTPException(status_code=400, detail=f"Invalid domain. Available: {', '.join(list_domains())}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid domain. Available: {', '.join(list_domains())}"
+            )
         settings.set_domain(domain_name)
         query_executor.df = None
         domain = settings.get_domain()
         return {"domain": domain_name, "entity_plural": domain.entity_name_plural,
-                "csv_file": domain.csv_file_path, "fields": domain.field_names, "status": "switched"}
+                "csv_file": domain.csv_file_path, "fields": domain.field_names,
+                "status": "switched"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
