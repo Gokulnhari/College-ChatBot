@@ -552,6 +552,23 @@ async def ask_question(request: QuestionRequest):
     except Exception:
         pass
 
+    # ← ADD: fix aggregate query with missing aggregations
+    if structured_query.get("query_type") == "aggregate":
+        aggs = structured_query.get("aggregations")
+        if not aggs or aggs == [None]:
+            try:
+                df     = settings.get_dataframe()
+                id_col = next(
+                    (c for c in df.columns if "id" in c.lower()),
+                    df.columns[0]
+                )
+            except Exception:
+                id_col = "Student_ID"
+            structured_query["aggregations"] = [
+                {"function": "count", "column": id_col, "alias": "total"}
+            ]
+            print(f"[routes] Fixed missing aggregations → count on {id_col}")
+
     # Inject extracted ID if LLM missed it
     if _extracted_id:
         if structured_query.get("filters") is None:
@@ -610,6 +627,8 @@ async def ask_question(request: QuestionRequest):
         response=natural_response, structured_query=structured_query,
         raw_result=result, mode="csv",
     )
+    
+
 
 
 # ── /active-csv ────────────────────────────────────────────────────────────────

@@ -73,7 +73,9 @@ async def detect_agent_intent(question: str, model_name: str = None) -> str:
     q = question.lower()
     non_email_patterns = [
         "give the", "show me", "fetch", "get", "find", "details",
-        "what is", "whats", "who is", "list", "display"
+        "what is", "whats", "who is", "list", "display",
+        "how many", "total number", "count", "how much",  # ← ADD THESE
+        "average", "marks", "attendance", "section", "class",  # ← ADD THESE
     ]
     if any(p in q for p in non_email_patterns) and "email" not in q:
         return "none"

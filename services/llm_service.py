@@ -269,6 +269,38 @@ class LLMService:
             
         # ─────────────────────────────────────────────────────────────────────
 
+        # ── Multi-record list response — format as table without LLM ──────────
+        if isinstance(result, list) and len(result) > 1:
+            total = len(result)
+            # Get key display columns (name + 2-3 relevant fields)
+            if result:
+                sample = result[0]
+                # Find name column
+                name_col = next(
+                    (k for k in sample.keys() if "name" in k.lower()),
+                    None
+                )
+                # Find ID column
+                id_col = next(
+                    (k for k in sample.keys() if "id" in k.lower()),
+                    None
+                )
+                # Build response lines
+                lines = [f"Found **{total}** records:\n"]
+                for i, row in enumerate(result, 1):
+                    parts = []
+                    if id_col:
+                        parts.append(f"{row.get(id_col, '')}")
+                    if name_col:
+                        parts.append(f"{row.get(name_col, '')}")
+                    # Add 2-3 more relevant fields
+                    for k, v in row.items():
+                        if k not in (id_col, name_col) and len(parts) < 5:
+                            parts.append(f"{k.replace('_', ' ')}: {v}")
+                    lines.append(f"{i}. " + " | ".join(str(p) for p in parts))
+                return "\n".join(lines)
+        # ─────────────────────────────────────────────────────────────────────
+
         domain = settings.get_domain()   # ← existing line, nothing changes below
         prompt = get_response_generator_prompt(domain, question, formatted_result)
 
