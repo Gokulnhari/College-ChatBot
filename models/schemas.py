@@ -19,10 +19,11 @@ from typing import Optional, List, Dict, Any
 
 class QuestionRequest(BaseModel):
     """Request model for asking questions"""
-    question: str
-    model: str
-    mode_override: Optional[str] = "Auto-detect"
+    question:             str
+    model:                str
+    mode_override:        Optional[str] = "Auto-detect"
     conversation_history: Optional[List[Dict[str, str]]] = None  # [{"role": "user/assistant", "content": "..."}]
+    selected_agent:       Optional[str] = None
 
     class Config:
         json_schema_extra = {

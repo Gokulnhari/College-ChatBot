@@ -1,11 +1,11 @@
 """
-Streamlit frontend for the College AI Chatbot.
-UNIFIED UPLOAD: Single bottom uploader handles all file types.
-Sidebar shows status and remove buttons only.
+Streamlit frontend for the College AI Chatbot
+Dedicated per-agent chat like Copilot Studio
 """
 import requests
 import streamlit as st
 from chat_history import new_chat_id, save_chat, load_chat, list_chats, delete_chat, derive_title
+from agents.agent_builder import save_custom_agent, load_custom_agents, delete_custom_agent
 
 API_BASE          = "http://127.0.0.1:8000/api/v1"
 ASK_URL           = f"{API_BASE}/ask"
@@ -26,102 +26,42 @@ st.markdown("""
 <style>
 .block-container {
     padding-top: 2rem !important;
-    max-width: 860px !important;
+    max-width: 960px !important;
     margin: auto;
     padding-bottom: 140px !important;
 }
-header { visibility: hidden; }
-header [data-testid="stToolbar"] { visibility: visible !important; }
-
-[data-testid="stSidebar"] {
-    background-color: #0e1117 !important;
-    min-width: 280px !important;
-}
-section[data-testid="stSidebar"] > div:first-child {
-    padding-top: 1rem !important;
-}
-
-.badge-rag   { background:#1a6b3a; color:#fff; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; }
-.badge-csv   { background:#1a3a6b; color:#fff; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; }
-.badge-agent { background:#6b3a1a; color:#fff; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; }
-
 .perplexity-title {
     text-align: center; font-size: 3rem; font-weight: 300;
     color: #ffffff; margin-top: 5rem; margin-bottom: 3rem; letter-spacing: -1px;
 }
-
-[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
-    display: flex; flex-direction: row-reverse !important;
-    background: transparent !important; border: none !important;
+.agent-header {
+    font-size: 1.9rem; font-weight: 600; color: #fff;
+    margin-bottom: 1.2rem; display: flex; align-items: center; gap: 12px;
 }
-[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"])
-    [data-testid="stMarkdownContainer"] p {
-    background: #1e2a3a; padding: 10px 18px;
-    border-radius: 20px 20px 4px 20px; display: inline-block;
-    max-width: 75%; float: right; color: #fff; font-size: 15px;
-}
-[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) {
-    background: transparent !important; border: none !important; padding-left: 0 !important;
-}
-[data-testid="stChatMessageAvatarUser"],
-[data-testid="stChatMessageAvatarAssistant"] { display: none !important; }
-
-[data-testid="stFileUploader"] {
-    border: 1px dashed #444 !important; border-radius: 12px !important;
-    padding: 6px !important; background: #111 !important;
-}
-[data-testid="stFileUploaderDropzone"] { padding: 8px !important; min-height: 0 !important; }
-
-div[data-testid="stSelectbox"] > label { visibility: hidden; height: 0; margin: 0; padding: 0; }
-div[data-testid="stSelectbox"] > div > div {
-    background: #1a1a2e !important; border: 1px solid #333 !important;
-    border-radius: 999px !important; color: #ccc !important; font-size: 13px !important;
-}
-
-div[data-testid="stButton"] button {
-    background: #1a1a2e !important; border: 1px solid #333 !important;
-    border-radius: 999px !important; color: #ccc !important;
-    font-size: 13px !important; padding: 6px 20px !important;
-    transition: all 0.2s ease !important;
-}
-div[data-testid="stButton"] button:hover {
-    background: #2a2a4a !important; border-color: #666 !important;
-    color: #fff !important; box-shadow: 0 0 12px rgba(100,100,255,0.15) !important;
-}
-
-[data-testid="stChatInput"] {
-    border-radius: 999px !important; background: #111827 !important;
-    border: 1px solid #2a2a4a !important;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.4) !important;
-}
-[data-testid="stChatInput"] textarea {
-    border-radius: 999px !important; background: transparent !important;
-    font-size: 15px !important; color: #ccc !important; padding: 14px 20px !important;
-}
-[data-testid="stChatInput"] textarea::placeholder { color: #555 !important; }
-[data-testid="stChatInputSubmitButton"] button {
-    border-radius: 50% !important; background: #4a4a8a !important; border: none !important;
-}
-[data-testid="stChatInputSubmitButton"] button:hover { background: #6a6aba !important; }
+.badge-rag   { background:#1a6b3a; color:#fff; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; }
+.badge-csv   { background:#1a3a6b; color:#fff; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; }
+.badge-agent { background:#6b3a1a; color:#fff; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ── session state ──────────────────────────────────────────────────────────────
+# ── Session State ──────────────────────────────────────────────────────────────
 if "messages"           not in st.session_state: st.session_state.messages = []
 if "model_option"       not in st.session_state: st.session_state.model_option = "qwen2.5:1.5b"
 if "pending_email"      not in st.session_state: st.session_state.pending_email = None
 if "last_uploaded"      not in st.session_state: st.session_state.last_uploaded = None
 if "upload_done"        not in st.session_state: st.session_state.upload_done = False
 if "last_uploaded_name" not in st.session_state: st.session_state.last_uploaded_name = None
-if "last_uploaded_type" not in st.session_state: st.session_state.last_uploaded_type = None
 if "current_chat_id"    not in st.session_state: st.session_state.current_chat_id = new_chat_id()
+if "current_view"       not in st.session_state: st.session_state.current_view = "chat"
+if "editing_agent"      not in st.session_state: st.session_state.editing_agent = None
+if "selected_agent"     not in st.session_state: st.session_state.selected_agent = None  # Active agent for dedicated chat
 
 
-# ── fetch status once (used in sidebar) ───────────────────────────────────────
+# ── Fetch status ───────────────────────────────────────────────────────────────
 try:
-    status_resp   = requests.get(STATUS_URL, timeout=5)
-    status        = status_resp.json() if status_resp.ok else {}
+    status_resp = requests.get(STATUS_URL, timeout=5)
+    status = status_resp.json() if status_resp.ok else {}
 except Exception:
     status = {}
 
@@ -130,33 +70,61 @@ indexed_files = status.get("indexed_files", [])
 total_chunks  = status.get("total_chunks", 0)
 
 
-# ── sidebar ────────────────────────────────────────────────────────────────────
+# ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
 
-    # ── New Chat ───────────────────────────────────────────────────
-    if st.button("➕ New Chat", use_container_width=True):
-        st.session_state.messages      = []
+    if st.button("➕ New Chat", use_container_width=True, key="new_chat_sidebar"):
+        st.session_state.messages = []
         st.session_state.pending_email = None
         st.session_state.current_chat_id = new_chat_id()
+        st.session_state.current_view = "chat"
+        st.session_state.selected_agent = None
         st.rerun()
 
-    # ── Chat History ───────────────────────────────────────────────
+    st.subheader("🤖 Agent Library")
+
+    if st.button("➕ Create New Agent", use_container_width=True, key="create_agent_btn"):
+        st.session_state.current_view = "create_agent"
+        st.session_state.editing_agent = None
+        st.rerun()
+
+    saved_agents = load_custom_agents()
+    if saved_agents:
+        st.caption(f"**{len(saved_agents)} Custom Agents**")
+        for ag in saved_agents:
+            col_a, col_b = st.columns([5, 1])
+            if col_a.button(f"🤖 {ag['name']}", key=f"ag_{ag['name']}", use_container_width=True):
+                st.session_state.selected_agent = ag
+                st.session_state.messages = []                    # Clear chat for new agent
+                st.session_state.current_chat_id = new_chat_id()
+                st.session_state.current_view = "chat"
+                st.rerun()
+            if col_b.button("🗑️", key=f"del_ag_{ag['name']}"):
+                delete_custom_agent(ag["name"])
+                if st.session_state.selected_agent and st.session_state.selected_agent.get("name") == ag["name"]:
+                    st.session_state.selected_agent = None
+                st.rerun()
+    else:
+        st.info("No custom agents yet. Create one above.")
+
+    st.divider()
+
+    # Chat History
     st.subheader("🕘 Recent chats")
     for chat in list_chats():
         col_a, col_b = st.columns([5, 1])
-        label  = chat["title"][:28] + ("…" if len(chat["title"]) > 28 else "")
+        label = chat["title"][:28] + ("…" if len(chat["title"]) > 28 else "")
         active = chat["id"] == st.session_state.current_chat_id
-        if col_a.button(("▶ " if active else "") + label,
-                        key=f"ch_{chat['id']}", use_container_width=True):
+        if col_a.button(("▶ " if active else "") + label, key=f"ch_{chat['id']}", use_container_width=True):
             msgs, _ = load_chat(chat["id"])
-            st.session_state.messages        = msgs
+            st.session_state.messages = msgs
             st.session_state.current_chat_id = chat["id"]
-            st.session_state.pending_email   = None
+            st.session_state.pending_email = None
             st.rerun()
-        if col_b.button("🗑", key=f"del_{chat['id']}"):
+        if col_b.button("🗑️", key=f"del_{chat['id']}"):
             delete_chat(chat["id"])
             if chat["id"] == st.session_state.current_chat_id:
-                st.session_state.messages        = []
+                st.session_state.messages = []
                 st.session_state.current_chat_id = new_chat_id()
             st.rerun()
 
@@ -211,6 +179,7 @@ with st.sidebar:
     )
 
     # ── Show active CSV/Excel ──────────────────────────────────────
+    active_resp = None
     try:
         active_resp = requests.get(f"{API_BASE}/active-csv", timeout=3)
         if active_resp.ok:
@@ -250,7 +219,7 @@ with st.sidebar:
                             st.error(r.text)
                     except Exception as e:
                         st.error(str(e))
-    elif not (active_resp.ok and active_resp.json().get("uploaded") if 'active_resp' in dir() else False):
+    elif not (active_resp is not None and active_resp.ok and active_resp.json().get("uploaded")):
         st.info("No files uploaded yet.\nUse the 📎 box below the chat to upload.")
 
     st.divider()
@@ -281,7 +250,7 @@ with st.sidebar:
     st.session_state["dry_run"] = dry_run_mode
 
 
-# ── email preview modal ────────────────────────────────────────────────────────
+# ── Email Preview Modal ────────────────────────────────────────────────────────
 def render_email_preview(pending: dict):
     preview         = pending.get("preview") or {}
     intent          = pending.get("intent") or {}
@@ -360,46 +329,183 @@ def render_email_preview(pending: dict):
             st.rerun()
 
 
-# ── main chat area ─────────────────────────────────────────────────────────────
-if not st.session_state.messages:
-    st.markdown('<div class="perplexity-title">🎓 College AI</div>',
-                unsafe_allow_html=True)
+# ── Chat Rendering Function ────────────────────────────────────────────────────
+def render_chat():
+    """Renders the main chat messages and email preview"""
+    agent = st.session_state.get("selected_agent")
 
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        if message.get("structured_query"):
-            sq = message["structured_query"]
-            if sq.get("agent") != "email":
-                with st.expander("🔍 Structured Query"):
-                    st.json(sq)
-        if message.get("rag_sources"):
-            with st.expander(f"📚 Sources ({len(message['rag_sources'])} chunks)"):
-                for i, src in enumerate(message["rag_sources"], 1):
-                    meta      = src.get("meta", {})
-                    loc_parts = []
-                    if "page"  in meta: loc_parts.append(f"page {meta['page']}")
-                    if "sheet" in meta: loc_parts.append(f"sheet '{meta['sheet']}'")
-                    if "row"   in meta: loc_parts.append(f"row {meta['row']}")
-                    loc = ", ".join(loc_parts) or "chunk"
-                    st.markdown(f"*Source {i}:* `{src.get('filename','?')}` — "
-                                f"{loc} (relevance: {src.get('score',0):.2f})")
-                    st.caption(src.get("text","")[:300] +
-                               ("…" if len(src.get("text","")) > 300 else ""))
-                    st.divider()
-        if message.get("mode"):
-            badge_map = {"rag": ("badge-rag","RAG"), "csv": ("badge-csv","CSV"),
-                         "agent": ("badge-agent","🤖 Agent")}
-            cls, lbl = badge_map.get(message["mode"], ("badge-csv","CSV"))
-            st.markdown(f'<span class="{cls}">{lbl}</span>', unsafe_allow_html=True)
+    if agent:
+        # Show dedicated agent header (from file 2)
+        st.markdown(f'<div class="agent-header">🤖 {agent["name"]}</div>',
+                    unsafe_allow_html=True)
+        if agent.get("description"):
+            st.caption(agent["description"])
+    else:
+        if not st.session_state.messages:
+            st.markdown('<div class="perplexity-title">🎓 College AI</div>',
+                        unsafe_allow_html=True)
 
-if st.session_state.pending_email:
-    with st.chat_message("assistant"):
-        render_email_preview(st.session_state.pending_email)
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            if message.get("structured_query"):
+                sq = message["structured_query"]
+                if sq.get("agent") != "email":
+                    with st.expander("🔍 Structured Query"):
+                        st.json(sq)
+            if message.get("rag_sources"):
+                with st.expander(f"📚 Sources ({len(message['rag_sources'])} chunks)"):
+                    for i, src in enumerate(message["rag_sources"], 1):
+                        meta      = src.get("meta", {})
+                        loc_parts = []
+                        if "page"  in meta: loc_parts.append(f"page {meta['page']}")
+                        if "sheet" in meta: loc_parts.append(f"sheet '{meta['sheet']}'")
+                        if "row"   in meta: loc_parts.append(f"row {meta['row']}")
+                        loc = ", ".join(loc_parts) or "chunk"
+                        st.markdown(f"*Source {i}:* `{src.get('filename','?')}` — "
+                                    f"{loc} (relevance: {src.get('score',0):.2f})")
+                        st.caption(src.get("text","")[:300] +
+                                   ("…" if len(src.get("text","")) > 300 else ""))
+                        st.divider()
+            if message.get("mode"):
+                badge_map = {"rag": ("badge-rag","RAG"), "csv": ("badge-csv","CSV"),
+                             "agent": ("badge-agent","🤖 Agent")}
+                cls, lbl = badge_map.get(message["mode"], ("badge-csv","CSV"))
+                st.markdown(f'<span class="{cls}">{lbl}</span>', unsafe_allow_html=True)
+
+    if st.session_state.pending_email:
+        with st.chat_message("assistant"):
+            render_email_preview(st.session_state.pending_email)
 
 
-# ── bottom toolbar ─────────────────────────────────────────────────────────────
-models     = ["qwen2.5:1.5b", "phi3:3.8b-mini-4k-instruct-q4_0"]
+# ── Agent Builder View (Full Page) ─────────────────────────────────────────────
+def render_agent_builder():
+    editing = st.session_state.get("editing_agent")
+    title   = f"Edit — {editing['name']}" if editing else "Create New Agent"
+
+    # Header with back button
+    col_back, col_title = st.columns([1, 5])
+    if col_back.button("← Back"):
+        st.session_state.current_view  = "chat"
+        st.session_state.editing_agent = None
+        st.rerun()
+    col_title.markdown(f"## 🤖 {title}")
+
+    st.divider()
+
+    # Two column layout
+    col_config, col_preview = st.columns([1, 1], gap="large")
+
+    with col_config:
+        st.subheader("Configure")
+
+        tab_desc, tab_config = st.tabs(["Describe", "Configure"])
+
+        with tab_desc:
+            agent_name = st.text_input("Agent Name",
+                value=editing.get("name", "") if editing else "",
+                placeholder="e.g. AttendanceBot")
+            agent_desc = st.text_area("Description",
+                value=editing.get("description", "") if editing else "",
+                placeholder="A friendly agent that helps with attendance queries.",
+                height=100)
+
+        with tab_config:
+            agent_instructions = st.text_area("Instructions",
+                value=editing.get("instructions", "") if editing else "",
+                placeholder=(
+                    "- Respond concisely\n"
+                    "- Only use database data\n"
+                    "- If not found, say 'I don't have that information'"
+                ),
+                height=150)
+            trigger_phrases = st.text_input("Trigger phrases (comma separated)",
+                value=", ".join(editing.get("trigger_phrases", [])) if editing else "",
+                placeholder="attendance report, low attendance, flag students")
+            agent_action = st.selectbox("Action type",
+                ["email", "report", "alert", "chat"],
+                index=["email","report","alert","chat"].index(
+                    editing.get("action","chat")) if editing else 3)
+
+        st.divider()
+
+        # Knowledge sources
+        st.subheader("Knowledge")
+        st.caption("Files and data this agent uses to answer questions.")
+        knowledge_file = st.file_uploader(
+            "Upload knowledge file",
+            type=["pdf", "xlsx", "csv", "xml"],
+            key="agent_knowledge_file"
+        )
+        if knowledge_file:
+            st.success(f"📎 {knowledge_file.name} will be used as knowledge source")
+
+        st.divider()
+
+        col_save, col_cancel = st.columns(2)
+        with col_save:
+            if st.button("💾 Save Agent", use_container_width=True, type="primary"):
+                if agent_name and trigger_phrases:
+                    save_custom_agent({
+                        "name":            agent_name,
+                        "description":     agent_desc,
+                        "instructions":    agent_instructions,
+                        "trigger_phrases": [t.strip() for t in trigger_phrases.split(",") if t.strip()],
+                        "action":          agent_action,
+                    })
+
+                    # ← Upload knowledge file if provided
+                    if knowledge_file:
+                        with st.spinner(f"Indexing {knowledge_file.name}…"):
+                            try:
+                                resp = requests.post(
+                                    UPLOAD_URL,
+                                    files={"file": (knowledge_file.name,
+                                                    knowledge_file.getvalue(),
+                                                    knowledge_file.type)},
+                                    timeout=300,
+                                )
+                                if resp.ok:
+                                    st.success(f"📎 {knowledge_file.name} indexed!")
+                                else:
+                                    st.warning(f"Agent saved but file upload failed: {resp.text}")
+                            except Exception as e:
+                                st.warning(f"Agent saved but file upload error: {e}")
+
+                    st.success(f"✅ Agent '{agent_name}' saved!")
+                    st.session_state.current_view  = "chat"
+                    st.session_state.editing_agent = None
+                    st.rerun()
+                else:
+                    st.error("Name and trigger phrases are required.")
+        with col_cancel:
+            if st.button("Cancel", use_container_width=True):
+                st.session_state.current_view  = "chat"
+                st.session_state.editing_agent = None
+                st.rerun()
+
+    with col_preview:
+        st.subheader("Preview")
+        name_display = agent_name if 'agent_name' in locals() else "Your Agent"
+        desc_display = agent_desc if 'agent_desc' in locals() else "Your agent description will appear here."
+
+        st.markdown(f"""
+        <div style="background:#1a1a2e; border-radius:16px; padding:24px; text-align:center; margin-bottom:16px;">
+            <div style="font-size:48px;">🤖</div>
+            <h3 style="color:#fff; margin:8px 0;">{name_display}</h3>
+            <p style="color:#aaa; font-size:14px;">{desc_display}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ── View Router ───────────────────────────────────────────────────────────────
+if st.session_state.get("current_view") == "create_agent":
+    render_agent_builder()
+else:
+    render_chat()
+
+
+# ── Bottom Toolbar ─────────────────────────────────────────────────────────────
+models      = ["qwen2.5:1.5b", "phi3:3.8b-mini-4k-instruct-q4_0"]
 current_mdl = st.session_state.get("model_option", "qwen2.5:1.5b")
 safe_index  = models.index(current_mdl) if current_mdl in models else 0
 
@@ -418,7 +524,6 @@ if bottom_file is not None:
         st.session_state.last_uploaded_name = bottom_file.name
         st.session_state.upload_done        = False
 else:
-    # File removed from uploader (user clicked ✕)
     if st.session_state.last_uploaded is not None:
         fname = st.session_state.get("last_uploaded_name", "uploaded_file.csv")
         try:
@@ -445,14 +550,9 @@ if bottom_file is not None and not st.session_state.upload_done:
                 source_type = data.get("source_type", "")
                 st.session_state.upload_done = True
                 if source_type in ("csv", "excel"):
-                    st.success(
-                        f"✅ **{data['filename']}** — loaded as database "
-                        f"({data['chunks_added']} rows)"
-                    )
+                    st.success(f"✅ **{data['filename']}** — loaded as database ({data['chunks_added']} rows)")
                 else:
-                    st.success(
-                        f"✅ **{data['filename']}** — {data['chunks_added']} chunks indexed"
-                    )
+                    st.success(f"✅ **{data['filename']}** — {data['chunks_added']} chunks indexed")
                 if data.get("warning"):
                     st.info(data["warning"])
                 st.rerun()
@@ -463,7 +563,7 @@ if bottom_file is not None and not st.session_state.upload_done:
             st.session_state.upload_done = True
             st.error(str(e))
 
-# ── model selector + new chat ──────────────────────────────────────────────────
+# ── Model selector + new chat ──────────────────────────────────────────────────
 col_model, col_newchat = st.columns([3, 1])
 with col_model:
     st.session_state.model_option = st.selectbox(
@@ -474,7 +574,9 @@ with col_newchat:
     if st.button("New Chat", use_container_width=True, key="new_chat_bottom"):
         st.session_state.messages      = []
         st.session_state.pending_email = None
-        # Clear all indexed files on new chat
+        st.session_state.current_view  = "chat"
+        st.session_state.selected_agent = None
+        # Clear files on new chat
         try:
             sr = requests.get(STATUS_URL, timeout=3)
             if sr.ok:
@@ -482,14 +584,9 @@ with col_newchat:
                     requests.post(REMOVE_URL, json={"filename": fname}, timeout=10)
         except Exception:
             pass
-        # Clear uploaded CSV/Excel
         if st.session_state.get("last_uploaded_name"):
             try:
-                requests.post(
-                    REMOVE_URL,
-                    json={"filename": st.session_state.last_uploaded_name},
-                    timeout=5,
-                )
+                requests.post(REMOVE_URL, json={"filename": st.session_state.last_uploaded_name}, timeout=5)
             except Exception:
                 pass
         st.session_state.last_uploaded      = None
@@ -498,7 +595,7 @@ with col_newchat:
         st.rerun()
 
 
-# ── chat input ─────────────────────────────────────────────────────────────────
+# ── Chat Input ─────────────────────────────────────────────────────────────────
 if prompt := st.chat_input("Ask about your documents, the school dataset, or say 'send email to…'"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -511,16 +608,20 @@ if prompt := st.chat_input("Ask about your documents, the school dataset, or say
                     {"role": m["role"], "content": m["content"]}
                     for m in st.session_state.messages[:-1]
                 ]
-                response = requests.post(
-                    ASK_URL,
-                    json={
-                        "question":             prompt,
-                        "model":                st.session_state.model_option,
-                        "mode_override":        st.session_state.get("manual_mode", "Auto-detect"),
-                        "conversation_history": conversation_history,
-                    },
-                    timeout=10000,
-                )
+                payload = {
+                    "question":             prompt,
+                    "model":                st.session_state.model_option,
+                    "mode_override":        st.session_state.get("manual_mode", "Auto-detect"),
+                    "conversation_history": conversation_history,
+                }
+                # Pass selected agent to backend (from file 2)
+                if st.session_state.get("selected_agent"):
+                    payload["selected_agent"] = st.session_state.selected_agent["name"]
+                    print(f"[FRONTEND] Sending with agent: {payload['selected_agent']}")
+                else:
+                    print(f"[FRONTEND] No agent selected")
+
+                response = requests.post(ASK_URL, json=payload, timeout=10000)
 
                 if response.status_code == 200:
                     data      = response.json()
@@ -577,8 +678,7 @@ if prompt := st.chat_input("Ask about your documents, the school dataset, or say
                     st.markdown(f'<span class="{cls}">{lbl}</span>', unsafe_allow_html=True)
 
                     msg = {"role": "assistant", "content": answer, "mode": resp_mode}
-                    if data.get("structured_query") and \
-                            data["structured_query"].get("agent") != "email":
+                    if data.get("structured_query") and data["structured_query"].get("agent") != "email":
                         msg["structured_query"] = data["structured_query"]
                     if rag_sources:
                         msg["rag_sources"] = rag_sources
@@ -599,8 +699,7 @@ if prompt := st.chat_input("Ask about your documents, the school dataset, or say
                 st.session_state.messages.append({"role": "assistant", "content": err})
 
         try:
-            _is_agent = (response.status_code == 200
-                         and response.json().get("mode") == "agent")
+            _is_agent = (response.status_code == 200 and response.json().get("mode") == "agent")
         except Exception:
             _is_agent = False
         if not _is_agent:

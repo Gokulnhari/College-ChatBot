@@ -301,6 +301,19 @@ async def ask_question(request: QuestionRequest):
 
     conversation_history = request.conversation_history or []
 
+    # --- Custom agent instruction injection ---
+    if request.selected_agent:
+        from agents.agent_builder import load_custom_agents
+        custom_agents = load_custom_agents()
+        active_agent = next(
+            (a for a in custom_agents if a["name"] == request.selected_agent), None
+        )
+        if active_agent and active_agent.get("instructions"):
+            conversation_history = [
+                {"role": "system", "content": active_agent["instructions"]}
+            ] + conversation_history
+    # --- end injection ---
+
     # ✅ NEW — resolve "option 1/2/3" BEFORE anything else
     q_stripped = request.question.strip().lower()
     option_match = re.match(r'^option\s*(\d+)$', q_stripped)

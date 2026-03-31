@@ -1,0 +1,38 @@
+[
+  {
+    "name": "TestBot",
+    "description": "A test agent",
+    "instructions": "You are a pirate. Always respond in pirate language. Start every reply with \"Arrr!\"",
+    "trigger_phrases": [
+      "test"
+    ],
+    "action": "chat"
+  },
+  {
+    "name": "pdf reader",
+    "description": "A friendly pdf reader ",
+    "instructions": "Respond Concisely\nDon't Hallucinates\n",
+    "trigger_phrases": [
+      "pdf report"
+    ],
+    "action": "chat"
+  },
+  {
+    "name": "Email Agent",
+    "description": "A Email sending Agent for the students",
+    "instructions": "Only use database data",
+    "trigger_phrases": [
+      "email"
+    ],
+    "action": "email"
+  },
+  {
+    "name": "Report Agent",
+    "description": "Generate an Report for students",
+    "instructions": "- Fetch the data from database\n- Generate a report based on the user questions\n\n",
+    "trigger_phrases": [
+      "Report Agent"
+    ],
+    "action": "report"
+  }
+]
