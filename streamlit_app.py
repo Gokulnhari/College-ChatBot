@@ -14,6 +14,7 @@ STATUS_URL        = f"{API_BASE}/status"
 REMOVE_URL        = f"{API_BASE}/remove-file"
 EMAIL_PREVIEW_URL = f"{API_BASE}/agent/email/preview"
 EMAIL_SEND_URL    = f"{API_BASE}/agent/email/send"
+REPORT_URL        = f"{API_BASE}/agent/report/generate"  # ← must exist
 
 st.set_page_config(
     page_title="College AI Chatbot",
@@ -632,23 +633,24 @@ if prompt := st.chat_input("Ask about your documents, the school dataset, or say
 
                     if resp_mode == "agent":
                         sq = data.get("structured_query", {})
+
                         if sq.get("agent") == "email":
                             with st.spinner("Preparing email preview…"):
                                 try:
                                     pr = requests.post(
                                         EMAIL_PREVIEW_URL,
                                         json={
-                                            "question":      prompt,
-                                            "model":         st.session_state.model_option,
+                                            "question": prompt,
+                                            "model": st.session_state.model_option,
                                             "parsed_intent": sq.get("parsed_intent"),
                                         },
                                         timeout=120,
                                     )
                                     if pr.ok:
                                         st.session_state.messages.append({
-                                            "role":    "assistant",
+                                            "role": "assistant",
                                             "content": answer,
-                                            "mode":    resp_mode,
+                                            "mode": resp_mode,
                                         })
                                         st.session_state.pending_email = pr.json()
                                         st.rerun()
@@ -656,6 +658,69 @@ if prompt := st.chat_input("Ask about your documents, the school dataset, or say
                                         st.error(f"Preview error: {pr.text}")
                                 except Exception as e:
                                     st.error(f"Preview error: {e}")
+
+                        elif sq.get("agent") == "report":
+                            with st.spinner("Generating report..."):
+                                try:
+                                    # ── Detect format directly from prompt — don't trust LLM ──────
+                                    q_lower = prompt.lower()
+                                    if "pdf" in q_lower:
+                                        forced_format = "pdf"
+                                    else:
+                                        forced_format = "excel"
+
+                                    # ── Get intent from structured_query ──────────────────────────
+                                    intent = sq.get("parsed_intent", {})
+
+                                    # ── Always override format from prompt ────────────────────────
+                                    intent["output_format"] = forced_format
+
+                                    report_resp = requests.post(
+                                        REPORT_URL,
+                                        json={
+                                            "question":      prompt,
+                                            "model":         st.session_state.model_option,
+                                            "parsed_intent": intent,   # ← pass full intent with correct format
+                                        },
+                                        timeout=120,
+                                    )
+
+                                    if report_resp.ok:
+                                        # ── Correct extension and mime type ───────────────────────
+                                        if forced_format == "pdf":
+                                            ext       = "pdf"
+                                            mime_type = "application/pdf"
+                                        else:
+                                            ext       = "xlsx"
+                                            mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+                                        filename = intent.get("filename", "report")
+                                        fname    = f"{filename}.{ext}"
+
+                                        st.success(f"✅ Report ready — {fname}")
+                                        st.download_button(
+                                            label     = f"📥 Download {ext.upper()} Report",
+                                            data      = report_resp.content,
+                                            file_name = fname,
+                                            mime      = mime_type,
+                                        )
+                                    else:
+                                        st.error(f"❌ Failed to generate report: {report_resp.text}")
+
+                                except Exception as e:
+                                    st.error(f"Report generation failed: {e}")
+
+                        elif sq.get("agent") == "alert":
+                            triggered = sq.get("triggered", [])
+
+                            if triggered:
+                                for alert in triggered:
+                                    st.warning(
+                                        f"⚠️ {alert['rule']['name']}: "
+                                        f"{alert['count']} students matched"
+                                    )
+                            else:
+                                st.info("No alerts triggered.")
 
                     rag_sources = data.get("rag_sources") or []
                     if rag_sources:

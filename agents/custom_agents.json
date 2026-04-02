@@ -27,12 +27,44 @@
     "action": "email"
   },
   {
-    "name": "Report Agent",
-    "description": "Generate an Report for students",
-    "instructions": "- Fetch the data from database\n- Generate a report based on the user questions\n\n",
+    "name": "Attendance Report Bot",
+    "description": "Generates attendance reports for students from the database in Excel or PDF format.",
+    "instructions": "- Generate attendance reports from the student database\n- Use filters when class, section, or attendance percentage is mentioned\n- Default output format should be Excel\n- If user asks for PDF, generate PDF\n- Keep filename meaningful",
     "trigger_phrases": [
-      "Report Agent"
+      "attendance report",
+      "generate report",
+      "export attendance",
+      "class report",
+      "low attendance report"
     ],
     "action": "report"
+  },
+  {
+    "name": "English Failure Checker",
+    "description": "Find students in Class 11 who failed in English by scoring below 50.",
+    "instructions": "- Only use CSV/database data\n- Check only Class 11 students\n- English_Marks below 50 means failed\n- Return student names, marks, section, and total failed count\n- Keep output clean in table style",
+    "trigger_phrases": [
+      "failed in english",
+      "class 11 failed students",
+      "english marks below 50",
+      "who failed in english"
+    ],
+    "action": "chat"
+  },
+  {
+    "name": "Excel Data Retrieval Agent",
+    "description": "Your job is to answer questions only using the uploaded spreadsheet data.\n",
+    "instructions": "Responsibilities\nRead the uploaded Excel/CSV file as a structured table.\nIdentify sheet names, column names, rows, filters, and values correctly.\nRetrieve exact rows based on user conditions.\nPerform filtering, counting, grouping, sorting, and comparisons.\nReturn answers in a clean table-like format when multiple records match.\nRules\nUse only uploaded spreadsheet data.\nNever make up values.\nIf a column is missing, clearly say:\n\"The requested column is not available in the uploaded file.\"\nIf no rows match, say:\n\"No matching records found.\"\nAlways preserve original column names exactly.\nSupport numeric filters like:\nabove / below\ngreater than / less than\nequal to\ntop / lowest\nSupport text filters like:\nclass\nsection\ncity\ndepartment\nsubject marks\nIf user asks for totals, return count.\nIf user asks for average/highest/lowest, calculate from matching rows.\nIf user asks for report, prepare downloadable Excel or PDF output.\nExamples\nFind all students from Bangalore with DSA marks above 80\nShow failed students in English_Marks below 50 in class 11\nCount students in class 8 section A\nGet top 5 attendance percentages\nGenerate report for low scorers in Maths",
+    "trigger_phrases": [
+      "find student",
+      "retrieve data",
+      "get marks",
+      "filter records",
+      "generate report",
+      "failed students",
+      "top scorers",
+      "attendance report"
+    ],
+    "action": "chat"
   }
 ]

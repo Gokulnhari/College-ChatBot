@@ -1,8 +1,10 @@
 """
 API routes for the application.
 """
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Response
+from agents.report_agent import generate_report
 from embedder import embedder
+from mcp_tools.mcp_client import mcp_client
 import json
 import re
 import httpx
@@ -21,7 +23,7 @@ from vector_store import vector_store
 import pandas as pd
 import io
 
-from agents.agent_router import detect_agent_intent, parse_email_intent
+from agents.agent_router import detect_agent_intent, parse_email_intent, parse_report_intent
 from agents.email_agent import (
     resolve_recipients,
     get_email_addresses,
@@ -41,6 +43,10 @@ class EmailPreviewRequest(BaseModel):
     model: Optional[str] = None
     parsed_intent: Optional[Dict[str, Any]] = None
 
+class ReportRequest(BaseModel):
+    question:      str
+    model:         Optional[str] = None
+    parsed_intent: Optional[Dict[str, Any]] = None
 
 class EmailSendRequest(BaseModel):
     intent: Dict[str, Any]
@@ -290,7 +296,49 @@ async def agent_email_send(request: EmailSendRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Email send error: {str(e)}")
 
+@router.post("/agent/report/generate")
+async def agent_report_generate(request: ReportRequest):
+    try:
+        intent = request.parsed_intent if request.parsed_intent else \
+                 await parse_report_intent(request.question, request.model)
 
+        print(f"[report] Parsed intent: {intent}")   # ← check this in terminal
+
+        df = settings.get_dataframe()
+        if df is None:
+            raise HTTPException(status_code=400, detail="No database loaded")
+
+        report_type   = intent.get("report_type",   "full")
+        filters       = intent.get("filters",        [])
+        output_format = intent.get("output_format",  "excel")
+        filename      = intent.get("filename",       "report")
+
+        print(f"[report] output_format from intent: {output_format}")  # ← ADD THIS
+
+        file_bytes = generate_report(report_type, filters, df, output_format)
+
+        # ── Correct media type and extension based on format ──────────────────
+        if output_format == "pdf":
+            media_type = "application/pdf"
+            ext        = "pdf"
+        else:
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ext        = "xlsx"
+
+        print(f"[report] Sending as: {ext} | media_type: {media_type}")  # ← ADD THIS
+
+        return Response(
+            content=file_bytes,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}.{ext}"
+            }
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Report generation error: {str(e)}")
+ 
 # ── /ask ───────────────────────────────────────────────────────────────────────
 
 @router.post("/ask", response_model=QuestionResponse)
@@ -300,6 +348,58 @@ async def ask_question(request: QuestionRequest):
     print(f"[ASK] Model: {request.model}")
 
     conversation_history = request.conversation_history or []
+
+    # ── Custom agent check ─────────────────────────────────────────────────────
+    from agents.agent_builder import match_custom_agent, load_custom_agents
+    custom_agent = match_custom_agent(request.question)
+
+    if custom_agent:
+        action = custom_agent.get("action", "chat")
+
+        if action == "email":
+            parsed_intent = {
+                "filters":       custom_agent.get("filters", []),
+                "subject":       custom_agent.get("subject", ""),
+                "body_template": custom_agent.get("body_template", ""),
+                "target":        custom_agent.get("target", "student"),
+            }
+            return QuestionResponse(
+                response=f"🤖 **{custom_agent['name']}** — preparing email...",
+                structured_query={"agent": "email", "parsed_intent": parsed_intent},
+                mode="agent",
+            )
+
+        elif action == "report":
+            # ← Parse actual intent from the user's question, not the agent config
+            parsed_intent = await parse_report_intent(request.question, request.model)
+            print(f"[custom_agent] Report intent parsed: {parsed_intent}")
+            return QuestionResponse(
+                response=f"📊 **{custom_agent['name']}** — generating report...",
+                structured_query={"agent": "report", "parsed_intent": parsed_intent},
+                mode="agent",
+            )
+
+        elif action == "alert":
+            from agents.alert_agent import check_alerts, add_alert_rule
+            df = settings.get_dataframe()
+            if custom_agent.get("filters"):
+                for f in custom_agent["filters"]:
+                    add_alert_rule({
+                        "name":      custom_agent["name"],
+                        "column":    f.get("column"),
+                        "operator":  f.get("operator", "<"),
+                        "threshold": f.get("value"),
+                        "action":    "email",
+                    })
+            triggered = check_alerts(df)
+            count     = sum(a["count"] for a in triggered)
+            return QuestionResponse(
+                response=f"🔔 **{custom_agent['name']}** — found **{count}** matching students.",
+                structured_query={"agent": "alert", "triggered": triggered},
+                mode="agent",
+            )
+        # action == "chat" falls through to normal pipeline below
+    # ── end custom agent check ─────────────────────────────────────────────────
 
     # --- Custom agent instruction injection ---
     if request.selected_agent:
@@ -313,6 +413,45 @@ async def ask_question(request: QuestionRequest):
                 {"role": "system", "content": active_agent["instructions"]}
             ] + conversation_history
     # --- end injection ---
+
+    
+
+    # ── MCP Tool Use — only for specific keyword triggers ─────────────────────
+    if mcp_client.is_connected:
+        q_lower = request.question.lower()
+        mcp_triggers = [
+            "what columns", "column names", "available columns",
+            "how many students", "total students", "count students",
+            "how many records", "total records",
+        ]
+        should_use_mcp = any(trigger in q_lower for trigger in mcp_triggers)
+
+        if should_use_mcp:
+            print(f"[MCP] Triggered for: {request.question}")
+            tools = mcp_client.get_tools_for_ollama()
+            tool_response = await llm_service.generate_with_tools(
+                question=request.question,
+                tools=tools,
+                model_name=request.model,
+                conversation_history=conversation_history,
+            )
+            if tool_response.get("tool_use"):
+                tool_name   = tool_response["tool_use"]["name"]
+                tool_args   = tool_response["tool_use"]["arguments"]
+                print(f"[MCP] LLM wants to call tool: {tool_name} with {tool_args}")
+                tool_result = await mcp_client.call_tool(tool_name, tool_args)
+                print(f"[MCP] Tool result: {tool_result[:100]}")
+                final = await llm_service.generate_chat_response(
+                    question=f"{request.question}\n\nData: {tool_result}",
+                    model_name=request.model,
+                    conversation_history=conversation_history,
+                )
+                return QuestionResponse(
+                    response=final,
+                    structured_query={"mcp_tool": tool_name, "args": tool_args},
+                    mode="csv",
+                )
+    # ── end MCP ───────────────────────────────────────────────────────────────
 
     # ✅ NEW — resolve "option 1/2/3" BEFORE anything else
     q_stripped = request.question.strip().lower()
@@ -375,6 +514,27 @@ async def ask_question(request: QuestionRequest):
                                "parsed_intent": parsed_intent},
             raw_result=None, mode="agent",
         )
+    
+     # ── NEW: Report intent detection ──────────────────────────────────────────
+    report_keywords = [
+        "generate report", "create report", "make report",
+        "attendance report", "marks report", "fee report",
+        "report for", "report of", "export report",
+    ]
+    q_lower_report = request.question.lower()
+    if any(kw in q_lower_report for kw in report_keywords):
+        parsed_intent = await parse_report_intent(request.question, request.model)
+        print(f"[ASK] Report intent detected: {parsed_intent}")
+        return QuestionResponse(
+            response="📊 Generating your report...",
+            structured_query={
+                "agent":         "report",
+                "parsed_intent": parsed_intent,
+            },
+            raw_result=None,
+            mode="agent",
+        )
+    # ── end report detection ──────────────────────────────────────────────────
 
     override = request.mode_override
     if override == "CSV only (student database)":

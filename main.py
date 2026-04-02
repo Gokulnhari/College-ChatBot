@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from routes import router
 from config import settings
+from mcp_tools.mcp_client import mcp_client
 
 app = FastAPI(
     title="School System Query API",
@@ -35,6 +36,10 @@ async def startup_event():
     df = settings.get_dataframe()
     print(f"Loaded {len(df)} rows")
     print("Application started successfully!")
+
+    print("[startup] Connecting to MCP server...")      # ← ADD THIS
+    await mcp_client.connect()                          # ← ADD THIS
+    print("[startup] MCP ready") 
 
 if __name__ == "__main__":
     import uvicorn

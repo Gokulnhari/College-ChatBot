@@ -394,6 +394,56 @@ class LLMService:
         except Exception as e:
             print(f"Error generating chat response: {e}")
             return "Hello! I'm experiencing some technical difficulties right now."
+        
+        # ── generate_with_tools (MCP) ─────────────────────────────────────────────
+
+    async def generate_with_tools(
+        self,
+        question: str,
+        tools: list,
+        model_name: str = None,
+        conversation_history: List[Dict] = None,
+    ) -> dict:
+        """Send question to Ollama with MCP tools. Returns tool_use or text."""
+        model_to_use = model_name if model_name else self.default_model
+
+        messages = []
+        for msg in (conversation_history or [])[-4:]:
+            if msg["role"] in ("user", "assistant"):
+                messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": question})
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    self.url.replace("/api/generate", "/api/chat"),
+                    json={
+                        "model":    model_to_use,
+                        "messages": messages,
+                        "tools":    tools,
+                        "stream":   False,
+                    },
+                )
+                response.raise_for_status()
+
+            data    = response.json()
+            message = data.get("message", {})
+
+            # LLM decided to call a tool
+            if message.get("tool_calls"):
+                tool_call = message["tool_calls"][0]
+                return {
+                    "tool_use": {
+                        "name":      tool_call["function"]["name"],
+                        "arguments": tool_call["function"]["arguments"],
+                    }
+                }
+            # LLM answered directly
+            return {"text": message.get("content", "")}
+
+        except Exception as e:
+            print(f"[MCP] generate_with_tools error: {e}")
+            return {"text": ""}  # fallback — existing pipeline takes over
 
     # ── classify_rag_intent ───────────────────────────────────────────────────
 

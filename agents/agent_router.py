@@ -55,6 +55,38 @@ Body: "Dear {{name}},\\n\\nThis is a reminder that your fee payment is due. Plea
 User message: {question}
 """
 
+REPORT_PARSE_PROMPT = """
+Extract report details from the user message. Be precise.
+
+report_type rules:
+- "attendance" → mentions attendance, absent, present, percentage
+- "marks"      → mentions marks, score, grades, result, exam
+- "fee"        → mentions fee, payment, due, paid, unpaid
+- "full"       → only if no specific type mentioned
+
+output_format rules:
+- "pdf"   → if user says pdf, PDF, document, print   ← CHECK THIS
+- "excel" → if user says excel, xlsx, spreadsheet, default if not mentioned
+
+Return ONLY valid JSON, no explanation:
+{{
+  "report_type": "attendance",
+  "filters": [
+    {{"column": "Class",   "operator": "==", "value": 8}},
+    {{"column": "Section", "operator": "==", "value": "A"}}
+  ],
+  "output_format": "pdf",
+  "filename": "attendance_class8_sectionA"
+}}
+
+IMPORTANT:
+- Class values are integers: use 8 not "8"
+- Section values are strings: use "A" not A
+- output_format must be exactly "pdf" or "excel" — nothing else
+
+User message: {question}
+"""
+
 
 def _fix_name_placeholders(body: str) -> str:
     body = re.sub(r'\[Full_Name\]', '{name}', body, flags=re.IGNORECASE)
@@ -74,12 +106,11 @@ async def detect_agent_intent(question: str, model_name: str = None) -> str:
     non_email_patterns = [
         "give the", "show me", "fetch", "get", "find", "details",
         "what is", "whats", "who is", "list", "display",
-        "how many", "total number", "count", "how much",  # ← ADD THESE
-        "average", "marks", "attendance", "section", "class",  # ← ADD THESE
+        "how many", "total number", "count", "how much",
+        "average", "marks", "attendance", "section", "class",
     ]
     if any(p in q for p in non_email_patterns) and "email" not in q:
         return "none"
-    
 
     model  = model_name or settings.DEFAULT_MODEL
     prompt = AGENT_DETECTION_PROMPT.format(question=question)
@@ -126,6 +157,28 @@ async def parse_email_intent(question: str, model_name: str = None) -> Dict:
         return intent
     except Exception:
         return _fallback_intent(question)
+
+
+async def parse_report_intent(question: str, model_name: str = None) -> Dict:
+    model  = model_name or settings.DEFAULT_MODEL
+    prompt = REPORT_PARSE_PROMPT.format(question=question)
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(settings.OLLAMA_TIMEOUT)) as client:
+            resp = await client.post(
+                settings.OLLAMA_URL,
+                json={"model": model, "prompt": prompt,
+                      "stream": False, "format": "json"}
+            )
+            resp.raise_for_status()
+        intent = json.loads(resp.json().get("response", "{}"))
+        return intent
+    except Exception:
+        return {
+            "report_type":   "full",
+            "filters":       [],
+            "output_format": "excel",
+            "filename":      "report"
+        }
 
 
 def _fallback_intent(question: str) -> Dict:

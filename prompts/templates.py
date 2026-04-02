@@ -218,6 +218,49 @@ Q: "students with grade A+ in CSE"
   "limit": 20
 }}
 
+Q: "who failed in English in class 11" / "students who failed math in class 8"
+{{
+  "query_type": "list",
+  "filters": [
+    {{"column": "English_Marks", "operator": "<", "value": 50}},
+    {{"column": "Class", "operator": "==", "value": 11}}
+  ],
+  "group_by": null,
+  "aggregations": null,
+  "select_columns": null,
+  "sort_by": {{"column": "English_Marks", "ascending": true}},
+  "limit": 20
+}}
+
+Q: "who passed in math in class 10" / "students who passed science in class 9"
+{{
+  "query_type": "list",
+  "filters": [
+    {{"column": "Math_Marks", "operator": ">=", "value": 50}},
+    {{"column": "Class", "operator": "==", "value": 10}}
+  ],
+  "group_by": null,
+  "aggregations": null,
+  "select_columns": null,
+  "sort_by": {{"column": "Math_Marks", "ascending": false}},
+  "limit": 20
+}}
+
+Q: "how many students failed in science in class 7"
+{{
+  "query_type": "aggregate",
+  "filters": [
+    {{"column": "Science_Marks", "operator": "<", "value": 50}},
+    {{"column": "Class", "operator": "==", "value": 7}}
+  ],
+  "group_by": null,
+  "aggregations": [{{"function": "count", "column": "{id_field}", "alias": "total"}}],
+  "select_columns": null,
+  "sort_by": null,
+  "limit": null
+}}
+
+
 Available columns: {columns_str}
 """
 

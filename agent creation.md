@@ -18,7 +18,7 @@ Optionally uploads a Knowledge File (PDF, CSV, XLSX, XML)
 Clicks "💾 Save Agent"
         ↓
 ┌─────────────────────────────────────────────────────┐
-│  app.py (Frontend)                                  │
+│  streamlit_app.py (Frontend)                                  │
 │  1. save_custom_agent() → writes to custom_agents.json │
 │  2. If knowledge file → POST /api/v1/upload         │
 └─────────────────────────────────────────────────────┘
