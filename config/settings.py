@@ -26,11 +26,14 @@ class Settings:
     OLLAMA_TIMEOUT  = 10000.0
 
     AVAILABLE_MODELS = {
-        "Qwen 2.5":    "qwen2.5:1.5b",
-        "Phi 3":       "phi3:3.8b-mini-4k-instruct-q4_0"
+        "Qwen 2.5":    "qwen2.5:7b",
+        "Phi 3":       "phi3:14b",
+        "Mistral":     "mistral:7b",
+        "Llama 3.1":   "llama3.1:8b",
+        "Qwen 3.5":    "qwen3.5:35b"
     }
 
-    DEFAULT_MODEL = "qwen2.5:1.5b"
+    DEFAULT_MODEL = "qwen2.5:7b"
 
     # ── DOMAIN CONFIGURATION ───────────────────────────────────────────────────
     # Set active domain via environment variable or hardcode here
@@ -88,11 +91,25 @@ class Settings:
         """ADDITION: Revert to original CSV"""
         cls._uploaded_df = None
 
+    # Marks columns used to compute Total_Marks
+    MARKS_COLUMNS = ["Math_Marks", "Science_Marks", "English_Marks",
+                     "Social_Marks", "Computer_Marks"]
+
+    @classmethod
+    def _add_computed_columns(cls, df: pd.DataFrame) -> pd.DataFrame:
+        """Add derived columns that the query planner can reference."""
+        marks_present = [c for c in cls.MARKS_COLUMNS if c in df.columns]
+        if marks_present and "Total_Marks" not in df.columns:
+            df = df.copy()
+            df["Total_Marks"] = df[marks_present].sum(axis=1)
+        return df
+
     @classmethod
     def get_dataframe(cls) -> pd.DataFrame:
-        """MODIFIED: Returns uploaded CSV if present, else original from active domain"""
+        """MODIFIED: Returns uploaded CSV if present, else original from active domain.
+        Computed columns (e.g. Total_Marks) are added automatically."""
         if cls._uploaded_df is not None:
-            return cls._uploaded_df
+            return cls._add_computed_columns(cls._uploaded_df)
         if cls._df is None:
             domain = cls.get_domain()
             csv_path = domain.csv_file_path
@@ -102,7 +119,7 @@ class Settings:
                     f"Domain: {domain.name}\n"
                     f"Please ensure the CSV file exists or change the domain."
                 )
-            cls._df = pd.read_csv(csv_path)
+            cls._df = cls._add_computed_columns(pd.read_csv(csv_path))
         return cls._df
 
     # ── RAG ADDITION: new settings ─────────────────────────────────────────────

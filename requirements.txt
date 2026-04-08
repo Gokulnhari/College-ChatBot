@@ -10,3 +10,5 @@ pypdf
 openpyxl
 scikit-learn
 python-multipart
+python-dotenv
+httpx

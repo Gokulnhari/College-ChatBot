@@ -1,8 +1,13 @@
 """
 Domain-agnostic prompt templates.
 Uses domain configuration to generate appropriate prompts for any industry.
+
+Each function checks config/prompt_store.py for a runtime override before
+falling back to the hardcoded default. Overrides are set via the admin API
+(PUT /api/v1/admin/prompts/{key}) and persisted in config/agent_prompts.json.
 """
 from config.domains import DomainConfig
+from config.prompt_store import prompt_store
 
 
 def get_classification_prompt(domain: DomainConfig, question: str) -> str:
@@ -11,6 +16,16 @@ def get_classification_prompt(domain: DomainConfig, question: str) -> str:
 
     Returns: Prompt to classify if question is database-related or general chat
     """
+    override = prompt_store.render(
+        "classification",
+        domain_description=domain.description,
+        entity_plural=domain.entity_name_plural,
+        field_names=", ".join(domain.field_names[:5]),
+        question=question,
+    )
+    if override is not None:
+        return override
+
     return f"""
 You are a classifier for a {domain.description} system.
 
@@ -57,6 +72,17 @@ def get_query_planner_prompt(domain: DomainConfig) -> str:
 
     # Build example queries
     examples_text = "\n".join([f"- {q}" for q in domain.example_queries[:3]])
+
+    override = prompt_store.render(
+        "query_planner",
+        domain_description=domain.description,
+        entity_plural=domain.entity_name_plural,
+        entity_name=domain.entity_name,
+        field_descriptions=field_descriptions,
+        example_queries=examples_text,
+    )
+    if override is not None:
+        return override
 
     return f"""You are a query planner for a {domain.description} system.
 
@@ -117,6 +143,15 @@ Convert natural language questions into structured queries that can be executed 
 
 
 def get_response_generator_prompt(domain: DomainConfig, question: str, result: str) -> str:
+    override = prompt_store.render(
+        "response_generator",
+        domain_description=domain.description,
+        question=question,
+        result=result,
+    )
+    if override is not None:
+        return override
+
     return f"""<|system|>
 You are a helpful assistant for a {domain.description} system.
 Convert the DATA into a natural English response to the QUESTION.
@@ -137,6 +172,15 @@ def get_rag_prompt(domain: DomainConfig, context: str, question: str) -> str:
     """
     Generate RAG (Retrieval-Augmented Generation) prompt for document Q&A.
     """
+    override = prompt_store.render(
+        "rag",
+        domain_description=domain.description,
+        context=context,
+        question=question,
+    )
+    if override is not None:
+        return override
+
     return f"""<|system|>
 You are a strict document reader for a {domain.description} system.
 
@@ -179,6 +223,15 @@ def get_chat_prompt(domain: DomainConfig) -> str:
 
     Returns: Prompt for handling general (non-database) questions
     """
+    override = prompt_store.render(
+        "chat",
+        domain_description=domain.description,
+        entity_plural=domain.entity_name_plural,
+        field_names=", ".join(f["name"] for f in domain.fields[:5]),
+    )
+    if override is not None:
+        return override
+
     return f"""You are a helpful AI assistant for a {domain.description} system.
 
 You can:

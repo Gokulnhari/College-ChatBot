@@ -12,6 +12,7 @@ import prompts
 importlib.reload(prompts)
 
 from config import settings
+from config.prompt_store import prompt_store
 from prompts import QUERY_PLANNER_PROMPT, RESPONSE_GENERATOR_PROMPT
 from prompts.templates import (
     get_classification_prompt,
@@ -396,7 +397,17 @@ QUESTION: {question}
 <|assistant|>""",
         }
 
-        prompt = intent_prompts.get(intent, intent_prompts["general"])
+        # Check prompt store first — admin may have a custom profile for this intent.
+        # Profile name matches intent name (summarize / compare / list / explain / lookup / general).
+        domain_description = settings.get_domain().description
+        override = prompt_store.render_profile(
+            "rag", intent,
+            domain_description=domain_description,
+            context=context,
+            question=question,
+            intent=intent,
+        )
+        prompt = override if override is not None else intent_prompts.get(intent, intent_prompts["general"])
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:

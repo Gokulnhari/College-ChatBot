@@ -30,6 +30,8 @@ from agents.email_agent import (
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 
+from config.prompt_store import prompt_store, PLACEHOLDERS, RAG_INTENTS
+
 
 class EmailPreviewRequest(BaseModel):
     question: str
@@ -429,3 +431,143 @@ async def set_domain(request: dict):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error switching domain: {str(e)}")
+
+
+# ── /admin/prompts ─────────────────────────────────────────────────────────────
+
+class PromptOverrideRequest(BaseModel):
+    template: str
+
+
+class PromptProfileRequest(BaseModel):
+    template: str
+
+
+# ── overview ───────────────────────────────────────────────────────────────────
+
+@router.get("/admin/prompts")
+async def list_prompt_overrides():
+    """
+    List all prompt keys with their active profile name, all saved profile
+    names, and available $placeholders.
+    """
+    all_info = prompt_store.list_all()
+    return {
+        key: {
+            "active_profile": all_info[key]["active"],
+            "profiles": all_info[key]["profiles"],
+            "is_overridden": all_info[key]["active"] is not None,
+            "available_placeholders": [f"${p}" for p in PLACEHOLDERS.get(key, [])],
+        }
+        for key in all_info
+    }
+
+
+# ── single-profile shorthand (backward-compatible) ────────────────────────────
+
+@router.put("/admin/prompts/{key}")
+async def set_prompt_override(key: str, request: PromptOverrideRequest):
+    """
+    Shorthand: saves template as profile named 'default' and activates it.
+    Use $placeholder syntax for dynamic values.
+    """
+    try:
+        prompt_store.set(key, request.template)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "key": key,
+        "active_profile": "default",
+        "status": "saved",
+        "available_placeholders": [f"${p}" for p in PLACEHOLDERS.get(key, [])],
+    }
+
+
+@router.delete("/admin/prompts/{key}")
+async def delete_prompt_override(key: str):
+    """
+    Shorthand: removes the 'default' profile and reverts to hardcoded default.
+    """
+    existed = prompt_store.delete(key)
+    if not existed:
+        raise HTTPException(status_code=404, detail=f"No override set for '{key}'")
+    return {"key": key, "status": "reverted_to_default"}
+
+
+# ── named profile management ───────────────────────────────────────────────────
+
+@router.get("/admin/prompts/{key}/profiles")
+async def list_profiles(key: str):
+    """
+    List all saved profiles for a prompt key and which one is active.
+    For key=rag, profile names should match intent names: summarize, compare,
+    list, explain, lookup, general. Each intent falls back independently to its
+    hardcoded default when no profile is saved for it.
+    """
+    try:
+        info = prompt_store.list_profiles(key)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    result = {
+        "key": key,
+        "active_profile": info["active"],
+        "profiles": info["profiles"],
+        "available_placeholders": [f"${p}" for p in PLACEHOLDERS.get(key, [])],
+    }
+    if key == "rag":
+        result["rag_intent_profile_names"] = list(RAG_INTENTS)
+    return result
+
+
+@router.put("/admin/prompts/{key}/profiles/{name}")
+async def save_profile(key: str, name: str, request: PromptProfileRequest):
+    """
+    Create or update a named profile for a prompt key.
+    The first profile saved for a key is automatically activated.
+    Saving a new profile does NOT change the currently active one.
+    """
+    try:
+        prompt_store.set_profile(key, name, request.template)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    info = prompt_store.list_profiles(key)
+    return {
+        "key": key,
+        "profile": name,
+        "active_profile": info["active"],
+        "status": "saved",
+    }
+
+
+@router.post("/admin/prompts/{key}/profiles/{name}/activate")
+async def activate_profile(key: str, name: str):
+    """
+    Switch the active profile for a prompt key. Takes effect immediately —
+    the next chat message will use the newly activated profile.
+    """
+    try:
+        prompt_store.activate_profile(key, name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"key": key, "active_profile": name, "status": "activated"}
+
+
+@router.delete("/admin/prompts/{key}/profiles/{name}")
+async def delete_profile(key: str, name: str):
+    """
+    Delete a named profile. If it was the active profile, the system falls
+    back to another saved profile (if any) or the hardcoded default.
+    """
+    try:
+        existed = prompt_store.delete_profile(key, name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not existed:
+        raise HTTPException(status_code=404, detail=f"Profile '{name}' not found for key '{key}'")
+    info = prompt_store.list_profiles(key)
+    return {
+        "key": key,
+        "deleted_profile": name,
+        "active_profile": info["active"],
+        "status": "deleted",
+    }

@@ -110,7 +110,7 @@ div[data-testid="stButton"] button:hover {
 
 # ── session state ──────────────────────────────────────────────────────────────
 if "messages"      not in st.session_state: st.session_state.messages = []
-if "model_option"  not in st.session_state: st.session_state.model_option = "qwen2.5:1.5b"
+if "model_option"  not in st.session_state: st.session_state.model_option = "qwen2.5:7b"
 if "pending_email" not in st.session_state: st.session_state.pending_email = None
 if "last_uploaded" not in st.session_state: st.session_state.last_uploaded = None
 if "upload_done"   not in st.session_state: st.session_state.upload_done = False
@@ -363,8 +363,8 @@ if st.session_state.pending_email:
 
 
 # ── bottom toolbar ─────────────────────────────────────────────────────────────
-models      = ["qwen2.5:1.5b", "phi3:3.8b-mini-4k-instruct-q4_0"]
-current_mdl = st.session_state.get("model_option", "qwen2.5:1.5b")
+models      = ["qwen2.5:7b", "phi3:14b", "mistral:7b", "llama3.1:8b", "qwen3.5:35b"]
+current_mdl = st.session_state.get("model_option", "qwen2.5:7b")
 safe_index  = models.index(current_mdl) if current_mdl in models else 0
 
 bottom_file = st.file_uploader(

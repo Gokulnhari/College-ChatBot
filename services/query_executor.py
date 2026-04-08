@@ -181,7 +181,7 @@ class QueryExecutor:
             query["aggregations"] = [query["aggregation"]]
 
         # FIX 2: normalize "operation" → "function"
-        aggregations = query.get("aggregations", [])
+        aggregations = query.get("aggregations") or []
         for agg in aggregations:
             if "operation" in agg and "function" not in agg:
                 agg["function"] = agg.pop("operation")
@@ -198,9 +198,10 @@ class QueryExecutor:
         else:
             grouped = None
 
-        # Apply aggregations
+        # Apply aggregations — if LLM returned aggregate type but forgot aggregations,
+        # fall back to a list query rather than crashing.
         if not aggregations:
-            raise ValueError("No aggregations specified for aggregate query")
+            return self._execute_list_query(df, query)
 
         results = {}
 
